@@ -1,5 +1,5 @@
 from bs4 import BeautifulSoup
-from crawl4ai import AsyncWebCrawler, CacheMode, BrowserConfig, CrawlerRunConfig
+from crawl4ai import AsyncWebCrawler, CacheMode, BrowserConfig, CrawlerRunConfig, DefaultMarkdownGenerator
 import re
 from parsers.parser_base import Parser
 
