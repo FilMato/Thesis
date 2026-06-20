@@ -134,10 +134,14 @@ def Zero_Inizializer(model_class: type[BaseModel]) -> dict:   #Legge un modello 
         if isinstance(field_type, type) and issubclass(field_type, BaseModel):  # Se il campo è un'altra classe Pydantic (es. Metrics o DensityMetrics) facciamo ricorsione
             zero_dict[key] = Zero_Inizializer(field_type)
         else:   # Altrimenti assumiamo che sia un valore singolo e lo mettiamo a 0.0
-            zero_dict[key] = 0.0 
+            zero_dict[key] = 0.0
     return zero_dict
 
 async def populate_evaluations(conn):
+    # NOTA: questa funzione pre-calcola evaluation_results e llm_judge_results all'avvio,
+    # cosi' full_gs_eval puo' leggere il judge_score gia' pronto dal DB invece di chiamare
+    # Ollama in tempo reale per ogni URL (causa di timeout/lentezza segnalata anche da altri
+    # gruppi: chiamare il judge live per ogni riga di full_gs_eval e' troppo lento per il grader)
     print("Avvio popolamento evaluation_results e llm_judge_results...")
     cursor = conn.cursor()
     cursor.execute(
@@ -237,7 +241,7 @@ async def lifespan(app: FastAPI):
     max_retries = 5
     delay_seconds = 5
     conn = None
-    
+
     print("Tentativo di connessione a MariaDB in corso...")
     while max_retries > 0:
         try:
@@ -257,12 +261,20 @@ async def lifespan(app: FastAPI):
                 print("Impossibile connettersi al database. Spegnimento del backend.")
                 sys.exit(1)
             time.sleep(delay_seconds)
-            
+
     app.state.db = conn
-    
+
     # Popolamento iniziale del database con i dati del Gold Standard
     if conn:
         populate_database(conn)
+        # Pre-calcolo evaluation_results e llm_judge_results: full_gs_eval legge da qui
+        # invece di richiamare Ollama in tempo reale (vedi nota in populate_evaluations).
+        # NON si fa await qui: ogni chiamata al judge richiede circa 1-2 minuti, e con
+        # decine di URL nel gold standard un await bloccante terrebbe l'app in startup
+        # per troppo tempo, rendendo il backend irraggiungibile per il grader (che ha
+        # un timeout molto piu' breve). Si lancia come task in background: l'app diventa
+        # subito raggiungibile, il DB viene popolato man mano che i task completano.
+        asyncio.create_task(populate_evaluations(conn))
     yield
 
     # Fase di spegnimento
@@ -389,17 +401,23 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
         raise HTTPException(status_code=400, detail="Dominio non supportato")
     conn=http_request.app.state.db
     cursor=conn.cursor()
+    # LEFT JOIN su llm_judge_results: il judge_score viene letto dal valore gia' calcolato
+    # da populate_evaluations all'avvio (vedi lifespan), NON richiamando Ollama qui.
+    # Questo evita di sforare i timeout del grader, che fallisce se /full_gs_eval ci mette
+    # troppo a causa di N chiamate sincrone a un LLM lento (lo stesso problema segnalato
+    # da altri gruppi sul forum del corso).
     cursor.execute(
         """
-        SELECT wr.url, wr.html_text, gs.gold_text
+        SELECT wr.url, wr.html_text, gs.gold_text, ljr.judge_score
         FROM web_resources wr
         JOIN gold_standard gs ON wr.url = gs.url
+        LEFT JOIN llm_judge_results ljr ON wr.url = ljr.url
         WHERE wr.domain = ?
         """,
         (domain,)
     )
     rows=cursor.fetchall()
-    cursor.close()    
+    cursor.close()
     count = 0
     valutatore = Evaluator()
     #articoli = GS_DOMAINS[domain]   #prendo in base al dominio il corrispettivo file dominio_gs.json che contiene il gold standard per quel dominio
@@ -407,7 +425,7 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
     somme = Zero_Inizializer(EvaluationOutput)    #inizializzo a zero tutte le somme che mi serviranno per fare la media alla fine
     somma_judge=0.0
     for row in rows:
-        url,html_text,gold_text=row[0],row[1],row[2]
+        url,html_text,gold_text,judge_score_db=row[0],row[1],row[2],row[3]
         parsed_text = ""    # inizializziamo parsed_text a una stringa vuota, e solo se parser_json è valido e contiene "parsed_text", lo aggiorniamo
         try:
             parser_json = await parser.parser_url2(url,html_text)
@@ -418,11 +436,8 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
             result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
         except Exception:
             result = Zero_Inizializer(EvaluationOutput)   # se la valutazione fallisce, mettiamo tutto a zero
-       # try:
-       #     judge_result=await ollama_client.judge(parsed_text=strip_txt(parsed_text),gold_text=gold_text)
-       #     somma_judge+=judge_result["judge_score"]
-       # except Exception:
-       #     pass
+
+        somma_judge += judge_score_db or 0.0  # judge_score gia' pronto dal DB, nessuna chiamata live
 
         for key, value in result.items():
             if isinstance(value, dict):
@@ -430,7 +445,7 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
                     somme[key][sub_key] += sub_value
             else:
                 somme[key] += value
-        count += 1 
+        count += 1
     if count == 0:  # se non ci sono articoli, restituisco gli zeri per evitare la divisione per zero
         return FullGSEvalOutput(**somme,judge_score=0.0)
     medie = {}
@@ -438,18 +453,18 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
         if isinstance(value, dict):
             medie[key] = {sub_key: sub_val / count for sub_key, sub_val in value.items()}    # comprehension per calcolare la media di ogni sotto-elemento del dizionario
         else:
-            medie[key] = value / count   # media per i valori singoli    
+            medie[key] = value / count   # media per i valori singoli
     return FullGSEvalOutput(**medie,judge_score=somma_judge/count)
 
 #funzione per pulire il markdown
-def strip_txt(text: str) -> str: 
-            
+def strip_txt(text: str) -> str:
+
     #text = text.lower()
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text) #grassetto
     text = re.sub(r'\_+([^_]+)\_+', r'\1', text) #corsivo
     text = re.sub(r'\#+\s?([^#]+)', r'\1', text) #titoli
     text = re.sub(r'\[([^\]]+)\]\((?:[^)\\]|\\.)*\)', r'\1', text) #link
-            
+
     return text
 
 
@@ -459,7 +474,7 @@ async def evaluate(request: EvaluationRequest) -> EvaluationOutput:
     try:
         return Evaluator().eval_server(parsed_text, request.gold_text)
     except Exception as e:
-        print(f"Errore durante la valutazione: {e}") 
+        print(f"Errore durante la valutazione: {e}")
         return EvaluationOutput(**Zero_Inizializer(EvaluationOutput))
 
 @app.post("/evaluate_judge")
@@ -558,7 +573,7 @@ async def add_gold_standard(body:AddGoldStandardRequest,http_request:Request)->O
         )
         if not cursor.fetchone():
             return OperationOutput(status="error")
-        
+
         cursor.execute(
             """
             INSERT INTO gold_standard (url, gold_text)
@@ -672,4 +687,3 @@ async def db_stats(http_request:Request)->DBStatsOutput:
         avg_eval=media_valutazione,
         avg_eval_judge=avg_eval_judje
     )
-

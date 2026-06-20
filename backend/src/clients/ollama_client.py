@@ -3,7 +3,7 @@ import json
 
 URL = "http://ollama:11434/api/generate" #l'API di ollama si raggiunge di default da questo url e invece di localhost si mette il nome del servizio per far si che funzioni su docker 
 SELECTED_MODEL = "gemma4:e2b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
-MAX_CHARS = 5000
+MAX_CHARS = 1000
 
 """gestisce la comunicazione con l'API di ollama, si occupa di estrarre il json dalla risposta
 del modello, in caso di output non parsabile applica il fallback 
