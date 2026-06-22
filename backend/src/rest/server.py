@@ -169,7 +169,7 @@ async def populate_evaluations(conn):
 
         # evaluation
         try:
-            result = valutatore.eval_server(parsed_text, gold_text)
+            result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
             precision = result["token_level_eval"]["precision"]
             recall = result["token_level_eval"]["recall"]
             f1 = result["token_level_eval"]["f1"]

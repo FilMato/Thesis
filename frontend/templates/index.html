@@ -109,15 +109,6 @@
         .home-card h2 { font-size: 1rem; margin-bottom: 6px; color: #1a237e; }
         .home-card p  { font-size: 0.83rem; color: #666; line-height: 1.5; }
 
-        /* ── TOGGLE ───────────────────────────────────────────── */
-        .toggle-group { display: flex; border: 1px solid #ccc; border-radius: 4px; overflow: hidden; width: fit-content; }
-        .toggle-group input[type=radio] { display: none; }
-        .toggle-group label {
-            padding: 7px 16px; font-size: 0.88rem; cursor: pointer;
-            background: #f5f5f5; border: none; font-weight: normal; margin: 0;
-        }
-        .toggle-group input[type=radio]:checked + label { background: #1a237e; color: #fff; font-weight: bold; }
-
         /* ── GS TABLE ─────────────────────────────────────────── */
         table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
         th { background: #1a237e; color: #fff; text-align: left; padding: 8px 10px; }
@@ -132,6 +123,17 @@
         /* ── CHIPS ────────────────────────────────────────────── */
         .chips { display: flex; flex-wrap: wrap; gap: 6px; }
         .chip  { background: #e8eaf6; color: #1a237e; border-radius: 12px; padding: 3px 12px; font-size: 0.82rem; font-weight: bold; }
+
+        /* ── MODE TOGGLE (Live/Local) ─────────────────────────── */
+        .mode-toggle { display: flex; border: 1px solid #ccc; border-radius: 4px; overflow: hidden; width: fit-content; }
+        .mode-toggle input[type=radio] { display: none; }
+        .mode-toggle label {
+            padding: 7px 18px; font-size: 0.85rem; cursor: pointer;
+            background: #f5f5f5; border: none; font-weight: bold; margin: 0;
+            text-align: center;
+        }
+        .mode-toggle input[type=radio]:checked + label { background: #1a237e; color: #fff; }
+        .mode-hint { font-size: 0.72rem; color: #888; margin-top: 3px; }
     </style>
 </head>
 <body>
@@ -219,47 +221,59 @@
     <div class="panel">
         {# Inserimento URL libero #}
         <form method="post" action="/parse_url">
-            <div class="field">
-                <label>Inserisci un URL:</label>
-                <div class="row">
-                    <input type="text" name="url"
-                           value="{{ submitted_url or '' }}"
-                           placeholder="https://...">
-                    <button class="btn-blue" type="submit">▶ Parsa</button>
+            <div class="row" style="align-items:flex-start">
+                <div class="field" style="flex:2">
+                    <label>Inserisci un URL:</label>
+                    <div class="row">
+                        <input type="text" name="url"
+                               value="{{ submitted_url or '' }}"
+                               placeholder="https://...">
+                        <button class="btn-blue" type="submit">▶ Parsa</button>
+                    </div>
+                </div>
+                <div class="field" style="flex:0 0 auto">
+                    <label>Modalità:</label>
+                    <div class="mode-toggle">
+                        <input type="radio" name="mode" id="mode-live-1" value="live" {{ 'checked' if mode != 'local' else '' }}>
+                        <label for="mode-live-1">🌐 Live</label>
+                        <input type="radio" name="mode" id="mode-local-1" value="local" {{ 'checked' if mode == 'local' else '' }}>
+                        <label for="mode-local-1">💾 Local</label>
+                    </div>
+                    <div class="mode-hint">Live: scarica la pagina dal web.<br>Local: usa l'HTML già salvato nel DB.</div>
                 </div>
             </div>
         </form>
 
         {# Selezione dal Gold Standard #}
         <form method="post" action="/parse_url" style="margin-top:12px">
-            <div class="field">
-                <label>Oppure seleziona dal Gold Standard:</label>
-                <div class="row">
-                    <select name="url">
-                        {% for domain, urls in gs_urls.items() %}
-                            <optgroup label="{{ domain }}">
-                                {% for u in urls %}
-                                    <option value="{{ u }}" {{ 'selected' if u == submitted_url else '' }}>{{ u }}</option>
-                                {% endfor %}
-                            </optgroup>
-                        {% endfor %}
-                    </select>
-                    <button class="btn-blue" type="submit">Parsa dal GS</button>
+            <div class="row" style="align-items:flex-start">
+                <div class="field" style="flex:2">
+                    <label>Oppure seleziona dal Gold Standard:</label>
+                    <div class="row">
+                        <select name="url">
+                            {% for domain, urls in gs_urls.items() %}
+                                <optgroup label="{{ domain }}">
+                                    {% for u in urls %}
+                                        <option value="{{ u }}" {{ 'selected' if u == submitted_url else '' }}>{{ u }}</option>
+                                    {% endfor %}
+                                </optgroup>
+                            {% endfor %}
+                        </select>
+                        <button class="btn-blue" type="submit">Parsa dal GS</button>
+                    </div>
+                </div>
+                <div class="field" style="flex:0 0 auto">
+                    <label>Modalità:</label>
+                    <div class="mode-toggle">
+                        <input type="radio" name="mode" id="mode-live-2" value="live" {{ 'checked' if mode != 'local' else '' }}>
+                        <label for="mode-live-2">🌐 Live</label>
+                        <input type="radio" name="mode" id="mode-local-2" value="local" {{ 'checked' if mode == 'local' else '' }}>
+                        <label for="mode-local-2">💾 Local</label>
+                    </div>
+                    <div class="mode-hint">Live: scarica la pagina dal web.<br>Local: usa l'HTML già salvato nel DB.</div>
                 </div>
             </div>
         </form>
-
-        {# Modalità live / locale #}
-        <div class="field" style="margin-top:12px;display:flex;align-items:center;gap:12px">
-            <label style="margin:0">Modalità:</label>
-            <div class="toggle-group">
-                <input type="radio" name="mode_display" id="m-live" checked>
-                <label for="m-live">🌐 Live</label>
-                <input type="radio" name="mode_display" id="m-local">
-                <label for="m-local">💾 Locale (DB)</label>
-            </div>
-            <span style="font-size:.8rem;color:#888">(usa il secondo form per locale)</span>
-        </div>
     </div>
 
     {# ── RISULTATI ──────────────────────────────────────────────── #}
@@ -356,19 +370,26 @@
         <div class="alert alert-success">✅ {{ success }}</div>
     {% endif %}
 
-    {# Selezione dominio + fetch URL #}
+    {# Selezione dominio: cambia subito la pagina (navigazione GET, nessuna fetch lato client) #}
     <div class="panel">
-        <form method="post" action="/gold-standard/fetch">
-            <div class="field">
+        <form method="get" action="/gold-standard">
+            <div class="field" style="max-width:300px">
                 <label>Dominio:</label>
-                <select name="domain" id="domain-sel" style="max-width:300px">
+                <select name="domain" onchange="this.form.submit()">
                     {% for d in domains %}
                         <option value="{{ d }}" {{ 'selected' if d == selected_domain else '' }}>{{ d }}</option>
                     {% endfor %}
                 </select>
             </div>
+        </form>
+    </div>
+
+    {# Fetch URL per il dominio selezionato #}
+    <div class="panel">
+        <form method="post" action="/gold-standard/fetch">
+            <input type="hidden" name="domain" value="{{ selected_domain or '' }}">
             <div class="field">
-                <label>URL da caricare:</label>
+                <label>URL da caricare ({{ selected_domain or '–' }}):</label>
                 <div class="row">
                     <input type="text" name="url"
                            value="{{ fetched_url or '' }}"
@@ -394,7 +415,7 @@
                     <input type="hidden" name="domain"    value="{{ selected_domain }}">
                     <input type="hidden" name="url"       value="{{ fetched_url }}">
                     <input type="hidden" name="html_text" value="{{ fetched_html }}">
-                    <textarea name="gold_text" placeholder="Scrivi qui il testo gold standard…">{{ gold_text_draft or '' }}</textarea>
+                    <textarea name="gold_text" placeholder="Scrivi qui il testo gold standard…"></textarea>
                     <button class="btn-green" type="submit" style="margin-top:8px">💾 Salva Gold Standard</button>
                 </form>
             </div>
@@ -445,7 +466,6 @@
 
     <h1>📊 Statistiche per Dominio</h1>
 
-    {# Card di riepilogo #}
     {% if stats %}
     {% set wr_total = stats.get('web_resources', {}).values() | list | sum %}
     {% set gs_total = stats.get('gold_standard', {}).values() | list | sum %}
@@ -483,10 +503,14 @@
                 {% set gs_count  = stats.get('gold_standard', {}).get(domain, 0) %}
                 {% set ev        = stats.get('avg_eval', {}).get(domain, {}) %}
                 {% set tok       = ev.get('token_level_eval', ev) %}
-                {% set prec      = tok.get('precision', none) %}
-                {% set rec       = tok.get('recall',    none) %}
-                {% set f1        = tok.get('f1',        none) %}
-                {% set judge_sc  = stats.get('avg_eval_judge', {}).get(domain, {}).get('judge_score', none) %}
+                {% set prec_raw  = tok.get('precision', none) %}
+                {% set rec_raw   = tok.get('recall',    none) %}
+                {% set f1_raw    = tok.get('f1',        none) %}
+                {% set judge_raw = stats.get('avg_eval_judge', {}).get(domain, {}).get('judge_score', none) %}
+                {% set prec      = prec_raw|float  if prec_raw  is not none else none %}
+                {% set rec       = rec_raw|float   if rec_raw   is not none else none %}
+                {% set f1        = f1_raw|float    if f1_raw    is not none else none %}
+                {% set judge_sc  = judge_raw|float if judge_raw is not none else none %}
                 <tr>
                     <td><strong>{{ domain }}</strong></td>
                     <td style="text-align:center">{{ wr_count }}</td>
@@ -519,7 +543,7 @@
                     <td style="text-align:center">
                         {% if judge_sc is not none %}
                             <strong style="color:#8e24aa">{{ "%.1f"|format(judge_sc) }}</strong>
-                            <span style="color:#999;font-size:.75rem">/10</span>
+                            <span style="color:#999;font-size:.75rem">/5</span>
                         {% else %}–{% endif %}
                     </td>
                 </tr>
