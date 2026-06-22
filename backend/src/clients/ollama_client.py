@@ -1,9 +1,19 @@
+import asyncio
 import httpx
 import json
 
-URL = "http://ollama:11434/api/generate" #l'API di ollama si raggiunge di default da questo url e invece di localhost si mette il nome del servizio per far si che funzioni su docker 
+URL = "http://ollama:11434/api/generate" #l'API di ollama si raggiunge di default da questo url e invece di localhost si mette il nome del servizio per far si che funzioni su docker
 SELECTED_MODEL = "gemma4:e2b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
 MAX_CHARS = 1000
+
+# Ollama (con un solo modello caricato) gestisce le richieste in slot limitati: se
+# populate_evaluations() (che ne lancia decine in sequenza all'avvio) e una chiamata
+# "live" dell'utente arrivano in contemporanea, il server puo' rispondere 500 anche
+# dopo aver generato correttamente il testo (contesa sullo slot/KV-cache). Questo lock
+# serializza TUTTE le chiamate al judge nel processo backend, eliminando la concorrenza
+# come causa del 500.
+_ollama_lock = asyncio.Lock()
+MAX_ATTEMPTS = 2  # 1 retry in caso di errore prima di usare il fallback
 
 """gestisce la comunicazione con l'API di ollama, si occupa di estrarre il json dalla risposta
 del modello, in caso di output non parsabile applica il fallback 
@@ -54,19 +64,32 @@ async def judge(parsed_text: str, gold_text: str) -> dict:
         "stream": False
     }
 
-    #in questo modo la chiamata non è bloccante :)
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        try:
-            r = await client.post(URL, json = payload)
-            r.raise_for_status()
-            json_resp = r.json()
-            giudizio = json.loads(json_resp["response"])
-        except Exception as e: #logica di fallback nel caso ci fossero problemi, restituisce comunque un dizionario in modo tale
-            #da non intaccare la performance totale del backend
-            giudizio = {
-                "model_name" : SELECTED_MODEL, 
-                "judge_score": 1,
-                "judge_feedback": f"{type(e).__name__}: {str(e) or repr(e.args)}"
-            }
-    
+    giudizio = None
+    # Il lock impedisce che questa chiamata sovrapponga ad un'altra chiamata al judge
+    # gia' in corso (es. quella lanciata da populate_evaluations() all'avvio): cosi'
+    # Ollama riceve sempre una sola richiesta di generazione alla volta.
+    async with _ollama_lock:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            last_error = None
+            for attempt in range(MAX_ATTEMPTS):
+                try:
+                    r = await client.post(URL, json=payload)
+                    r.raise_for_status()
+                    json_resp = r.json()
+                    giudizio = json.loads(json_resp["response"])
+                    break  # successo, niente retry
+                except Exception as e:
+                    last_error = e
+                    if attempt < MAX_ATTEMPTS - 1:
+                        await asyncio.sleep(2)  # piccola pausa prima del retry
+                        continue
+
+            if giudizio is None:  #logica di fallback nel caso ci fossero problemi, restituisce comunque un dizionario in modo tale
+                #da non intaccare la performance totale del backend
+                giudizio = {
+                    "model_name": SELECTED_MODEL,
+                    "judge_score": 1,
+                    "judge_feedback": f"{type(last_error).__name__}: {str(last_error) or repr(last_error.args)}"
+                }
+
     return giudizio
