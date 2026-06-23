@@ -3,7 +3,7 @@ import httpx
 import json
 
 URL = "http://ollama:11434/api/generate" #l'API di ollama si raggiunge di default da questo url e invece di localhost si mette il nome del servizio per far si che funzioni su docker
-SELECTED_MODEL = "gemma4:e2b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
+SELECTED_MODEL = "llama3.2:3b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
 MAX_CHARS = 1000
 
 # Ollama (con un solo modello caricato) gestisce le richieste in slot limitati: se
