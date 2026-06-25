@@ -43,7 +43,7 @@ services:
       MYSQL_USER: minerva_user     
       MYSQL_PASSWORD: minerva_pass 
     volumes:
-      - ./mariadb_data:/var/lib/mysql
+      - mariadb_volume:/var/lib/mysql
       - ./init_db:/docker-entrypoint-initdb.d  
     # Aggiunta del healthcheck per MariaDB per assicurarsi che il servizio sia pronto prima di avviare il backend
     healthcheck:
@@ -52,7 +52,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # 3. Si definisce il servizio OLLAMA
+  # 4. Si definisce il servizio OLLAMA
   ollama:
     image: ollama/ollama
     ports:
@@ -69,3 +69,7 @@ services:
     tty: true
     restart: always
     entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
+
+# DICHIARAZIONE DEL VOLUME NOMINATO
+volumes:
+  mariadb_volume:
