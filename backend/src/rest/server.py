@@ -510,7 +510,7 @@ async def status(http_request: Request) -> StatusOutput:
         db_status = "error"
 
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get("http://ollama:11434/api/tags")
             ollama_status = "ok" if r.status_code == 200 else "error"
     except Exception:
