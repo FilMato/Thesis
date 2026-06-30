@@ -226,7 +226,7 @@ class Parser_UN(Parser):
                 except Exception as e:
                     print(f"Selettore '{selector}' fallito: {e}")
                     continue
-                print(result.success, repr(result.markdown), result.error_message)
+                
                 result_markdown = _clean_output(result.markdown, title) if result.markdown else ""
                 if result.success and result_markdown and len(result_markdown.strip()) > _MIN_LENGTH:
                     return {
@@ -244,7 +244,7 @@ class Parser_UN(Parser):
                 print(f"Parsing senza selettore fallito: {e}")
                 result = None
             if result is not None:
-                print(result.success, repr(result.markdown), result.error_message)
+                
                 result_markdown = _clean_output(result.markdown, title) if result.markdown else ""
                 if result.success and result_markdown and len(result_markdown.strip()) > _MIN_LENGTH:
                     return {
