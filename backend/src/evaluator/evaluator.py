@@ -18,6 +18,8 @@ class Evaluator:
     #metodo per creare una lista di token
     @staticmethod
     def _tokenization(text: str) -> list[str]:
+
+        text = text.lower()
         #funzione per rendere il testo pulito
         cleaning_rule = str.maketrans(string.punctuation, ' ' * len(string.punctuation)) #sostituisce la punteggiatura con spazi vuoti
         clean_txt = text.translate(cleaning_rule)

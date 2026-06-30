@@ -468,7 +468,6 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
 #funzione per pulire il markdown
 def strip_txt(text: str) -> str:
 
-    #text = text.lower()
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text) #grassetto
     text = re.sub(r'\_+([^_]+)\_+', r'\1', text) #corsivo
     text = re.sub(r'\#+\s?([^#]+)', r'\1', text) #titoli
