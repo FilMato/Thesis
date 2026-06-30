@@ -25,8 +25,6 @@ restituisce sempre 200 con il modello popolato, l'output è un dizionario pyhton
 #eventualmente è possibile aggiungere degli score "di mezzo" (e.g 4.5, 4.75..) per rendere la valutazione più precisa
 
 #problemi: ora è molto lento (1 minuto e mezzo in media per formulare un giudizio), credo dipenda dal modello utilizzato
-
-#NOTA PER NOI: DA INGLESE POSSIAMO METTERLO IN ITALIANO CON CLAUDE/GEMINI -> DA DECIDERE INSIEME
 async def judge(parsed_text: str, gold_text: str) -> dict:
     prompt = f"""Act like an expert evaluator of web scraping systems. Your goal is to compare two different texts: 
                  Parsed Text: {parsed_text[:MAX_CHARS]}

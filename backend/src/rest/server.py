@@ -241,8 +241,6 @@ async def populate_evaluations(conn):
 
     print("Popolamento evaluation completato.")
 
-#FATTA FARE DA CLAUDE PER TESTARE
-
 
 # Questa funzione serve come doppio controllo per assicurarsi che il backend non si avvii finché MariaDB non è pronto. Anche se abbiamo messo un healthcheck nel docker-compose.
 @asynccontextmanager
@@ -290,7 +288,6 @@ async def lifespan(app: FastAPI):
     if app.state.db:
         app.state.db.close()
         print("Connessione a MariaDB chiusa correttamente.")
-#----------------------------------------------------------------
 
 
 app = FastAPI(lifespan=lifespan)
@@ -303,7 +300,6 @@ async def post_parse(body: PostParseRequest,http_request:Request)-> ParseOutput:
         raise HTTPException(status_code=400, detail="Dominio non supportato")
     parser = ParserFactory.create(domain)   #seleziona il parser corretto in base al dominio, se il dominio non è supportato solleva un'eccezione
     if body.local:
-        #articolo=GS_INDEX.get(domain,{}).get(body.url) #Quando pippo mi da il DB va modificata con la chiamata alla repository
         conn=http_request.app.state.db
         cursor=conn.cursor()
         cursor.execute(
@@ -334,7 +330,6 @@ async def domains() -> DomainsOutput:
 
 @app.get("/gold_standard")
 async def gold_standard(url: str,http_request:Request) -> GSOutput:
-    #articolo = GS_INDEX.get(domain, {}).get(url) #da modificare con la chiamata al databse quando ci sta
     conn=http_request.app.state.db
     cursor=conn.cursor()
     cursor.execute(
@@ -365,7 +360,6 @@ async def gold_standard(url: str,http_request:Request) -> GSOutput:
 async def gold_standard_urls(domain:str,http_request:Request) ->GoldStandardUrlsOutput:
     if domain not in SUPPORTED_DOMAINS:
         raise HTTPException(status_code=400,detail="Dominio non supportato")
-    #urls=list(GS_INDEX.get(domain,{}).keys()) #da sostituire GS_INDEX con il database
     conn=http_request.app.state.db
     cursor=conn.cursor()
     cursor.execute(
@@ -386,7 +380,6 @@ async def gold_standard_urls(domain:str,http_request:Request) ->GoldStandardUrls
 async def full_gold_standard(domain: str,http_request:Request) -> FullGSOutput:
     if domain not in SUPPORTED_DOMAINS:
         raise HTTPException(status_code=400, detail="Dominio non supportato")
-    #gs=GS_DOMAINS[domain]   #prendo in base al dominio il corrispettivo file dominio_gs.json che contiene il gold standard per quel dominio
     conn=http_request.app.state.db
     cursor=conn.cursor()
     cursor.execute(

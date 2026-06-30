@@ -171,8 +171,6 @@ async def parser_get(request:Request):
     )
 
 
-# ════════════════════════ GOLD STANDARD BUILDER (NUOVO) ════════════════════════
-
 @app.get("/gold-standard", response_class=HTMLResponse)
 async def gold_standard_get(
     request: Request,
@@ -299,9 +297,6 @@ async def gold_standard_delete(request: Request, domain: str = Form(...), url: s
     if error:
         params["error"] = error
     return RedirectResponse(url=f"/gold-standard?{urlencode(params)}", status_code=303)
-
-
-# ════════════════════════ STATISTICHE (NUOVO) ════════════════════════
 
 @app.get("/stats", response_class=HTMLResponse)
 async def stats_get(request: Request):
