@@ -3,7 +3,7 @@ import re
 import sys
 import time
 import asyncio
-import mariadb # Ricordatevi di metterlo nel requirements.txt
+import mariadb 
 import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request

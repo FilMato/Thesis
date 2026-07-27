@@ -10,12 +10,17 @@ services:
     depends_on:
       - mariadb
       - ollama
+      - neo4j  # <-- AGGIUNTO: Il backend ora aspetta anche Neo4j
     environment:
       - DB_HOST=mariadb
-      - DB_USER=minerva_user       # <-- Nuovo utente
+      - DB_USER=minerva_user       
       - DB_PASSWORD=minerva_pass 
       - DB_NAME=minerva_db
       - OLLAMA_HOST=http://ollama:11434
+      # <-- AGGIUNTO: Credenziali e URI per Neo4j
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=minerva_graph_pass
     volumes:
       - ./gs_data:/app/gs_data
       - ./domains.json:/app/domains.json
@@ -45,14 +50,13 @@ services:
     volumes:
       - mariadb_volume:/var/lib/mysql
       - ./init_db:/docker-entrypoint-initdb.d  
-    # Aggiunta del healthcheck per MariaDB per assicurarsi che il servizio sia pronto prima di avviare il backend
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # 4. Si definisce il servizio OLLAMA
+  # 4. Definiamo il servizio OLLAMA
   ollama:
     image: ollama/ollama
     ports:
@@ -60,9 +64,7 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
     volumes:
-      - ./ollama_data:/root/.ollama #./ollama_data -> percorso su computer fisico, path relativo alla posizione in cui si trova il file .yaml,
-      #/root/.ollama percorso all'interno del file system isolato del container di ollama (docker esige che la destinazione interna 
-      #al container sia un path assoluto)
+      - ./ollama_data:/root/.ollama 
       - ./entrypoint.sh:/entrypoint.sh
     container_name: ollama
     pull_policy: always
@@ -70,6 +72,19 @@ services:
     restart: always
     entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
 
-# DICHIARAZIONE DEL VOLUME NOMINATO
+  # 5. Definiamo il servizio NEO4J
+  neo4j:
+    image: neo4j:5  # Usiamo la versione 5, stabile e recente
+    ports:
+      - "7474:7474" # Porta per l'interfaccia Web (Neo4j Browser)
+      - "7687:7687" # Porta per il protocollo Bolt (connessione da Python)
+    environment:
+      # Impostiamo utente (neo4j) e password (minerva_graph_pass)
+      - NEO4J_AUTH=neo4j/minerva_graph_pass
+    volumes:
+      - neo4j_volume:/data # Volume persistente per salvare il grafo
+
+# DICHIARAZIONE DEI VOLUMI NOMINATI
 volumes:
   mariadb_volume:
+  neo4j_volume:  # <-- AGGIUNTO: Volume per Neo4j

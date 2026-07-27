@@ -3,7 +3,7 @@ import httpx
 import json
 
 URL = "http://ollama:11434/api/generate" #l'API di ollama si raggiunge di default da questo url e invece di localhost si mette il nome del servizio per far si che funzioni su docker
-SELECTED_MODEL = "llama3.2:3b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
+SELECTED_MODEL = "qwen3:4b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
 MAX_CHARS = 1000
 
 # Ollama (con un solo modello caricato) gestisce le richieste in slot limitati: se
@@ -91,3 +91,76 @@ async def judge(parsed_text: str, gold_text: str) -> dict:
                 }
 
     return giudizio
+
+async def extract_triples(text: str) -> dict:
+    """
+    Estrae triple relazionali da un testo fornito utilizzando il modello LLM locale.
+    Applica un'ontologia rigida per l'inserimento in Neo4j e restituisce un dizionario.
+    """
+    prompt = f"""Sei un estrattore avanzato di dati per un Knowledge Graph. 
+Il tuo compito è leggere il seguente testo ed estrarre le relazioni logiche (triple) tra le entità in esso contenute.
+
+TESTO DA ANALIZZARE:
+{text[:MAX_CHARS]}
+
+REGOLE RIGOROSE DELL'ONTOLOGIA:
+1. Devi classificare il campo "subject_type" e "object_type" ESCLUSIVAMENTE con uno di questi valori ammessi:
+   Person, Movie, TV_Serie, Character, Award, Genre
+
+2. Devi classificare il campo "relation" ESCLUSIVAMENTE con uno di questi valori ammessi:
+    DIRECTED tra Person e Movie o TV_Serie,
+    ACTED_IN tra Person e Movie o TV_Serie, 
+    INTERPRETED tra Person e Character, 
+    APPEARS_IN tra Character e Movie o TV_Serie, 
+    HAS_GENRE  tra Genre e Movie o TV_Serie, 
+    WON tra Award e Movie o TV_Serie
+
+3. La tua risposta deve essere UNICAMENTE un oggetto JSON valido contenente una lista chiamata "triples".
+4. NON aggiungere spiegazioni, formattazioni markdown all'esterno del blocco JSON, o risposte discorsive.
+
+ESEMPIO DI FORMATO RICHIESTO:
+{{
+    "triples": [
+        {{
+            "subject": "Christopher Nolan",
+            "subject_type": "Person",
+            "relation": "DIRECTED",
+            "object": "Inception",
+            "object_type": "Movie"
+        }}
+    ]
+}}
+"""
+    
+    payload = {
+        "model": SELECTED_MODEL,
+        "prompt": prompt,
+        "format": "json",
+        "stream": False
+    }
+
+    risultato = None
+    
+    async with _ollama_lock:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            last_error = None
+            for attempt in range(MAX_ATTEMPTS):
+                try:
+                    r = await client.post(URL, json=payload)
+                    r.raise_for_status()
+                    json_resp = r.json()
+                    risultato = json.loads(json_resp["response"])
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < MAX_ATTEMPTS - 1:
+                        await asyncio.sleep(2)
+                        continue
+
+            if risultato is None:
+                risultato = {
+                    "triples": [],
+                    "error": f"{type(last_error).__name__}: {str(last_error) or repr(last_error.args)}"
+                }
+
+    return risultato
