@@ -1,4 +1,0 @@
-time="2026-05-27T13:00:59+02:00" level=warning msg="/Users/alfryskate/Web-Scraping-Parser-for-MinervaAI/docker-compose.yaml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
- Image ollama/ollama Pulling 
- Image mariadb:11.7.2-ubi9 Pulling 
-error getting credentials - err: exec: "docker-credential-desktop": executable file not found in $PATH, out: ``
