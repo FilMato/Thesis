@@ -32,7 +32,9 @@ except FileNotFoundError:   # Fallback in caso di problemi di percorso prendo i 
         "www.my-personaltrainer.it",
         "it.wikipedia.org",
         "www.premierleague.com",
-        "www.un.org"
+        "www.un.org",
+        "www.mymovies.it",
+        "www.imdb.com"
     ]
 # --- FINE BLOCCO DA CANCELLARE -----------------------------------------------------------------------------------------------------------------
 
@@ -139,9 +141,7 @@ def Zero_Inizializer(model_class: type[BaseModel]) -> dict:   #Legge un modello 
 
 async def populate_evaluations(conn):
     # NOTA: questa funzione pre-calcola evaluation_results e llm_judge_results all'avvio,
-    # cosi' full_gs_eval puo' leggere il judge_score gia' pronto dal DB invece di chiamare
-    # Ollama in tempo reale per ogni URL (causa di timeout/lentezza segnalata anche da altri
-    # gruppi: chiamare il judge live per ogni riga di full_gs_eval e' troppo lento per il grader)
+    # cosi' full_gs_eval puo' leggere il judge_score gia' pronto dal DB.
     print("Avvio popolamento evaluation_results e llm_judge_results...")
     cursor = conn.cursor()
     cursor.execute(
@@ -149,6 +149,16 @@ async def populate_evaluations(conn):
         SELECT wr.url, wr.domain, wr.html_text, gs.gold_text
         FROM web_resources wr
         JOIN gold_standard gs ON wr.url = gs.url
+        
+        -- Controlliamo cosa c'è già nel database
+        LEFT JOIN parsed_results pr ON wr.url = pr.url
+        LEFT JOIN llm_judge_results ljr ON wr.url = ljr.url
+        LEFT JOIN evaluation_results er ON wr.url = er.url
+        
+        -- Filtriamo: prendiamo l'URL SOLO se manca in ALMENO UNA delle tabelle finali
+        WHERE pr.url IS NULL 
+           OR ljr.url IS NULL 
+           OR er.url IS NULL
         """
     )
     rows = cursor.fetchall()
@@ -167,6 +177,26 @@ async def populate_evaluations(conn):
         except Exception:
             parsed_text = ""
 
+        # Salvataggio del testo parsato nel DB
+        if parsed_text:
+            try:
+                cursor_p = conn.cursor()
+                cursor_p.execute(
+                    """
+                    INSERT INTO parsed_results (url, parsed_text, parser_version)
+                    VALUES (?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                        parsed_text = VALUES(parsed_text),
+                        parser_version = VALUES(parser_version)
+                    """,
+                    (url, parsed_text, "1.0")
+                )
+                conn.commit()
+                cursor_p.close()
+                print(f"[populate_evaluations] Salvato in parsed_results per {url}")
+            except Exception as e:
+                print(f"Errore salvataggio parsed_results per {url}: {e}")
+
         # evaluation
         try:
             result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
@@ -182,8 +212,6 @@ async def populate_evaluations(conn):
             precision, recall, f1 = 0.0, 0.0, 0.0
             extra = {}
 
-        # Log diagnostico per-URL: permette di capire quali pagine abbassano la
-        # media del dominio (es. parsing fallito -> parsed_text vuoto -> punteggio 0)
         print(f"[populate_evaluations] {url} -> precision={precision:.3f} recall={recall:.3f} f1={f1:.3f} (parsed_text len={len(parsed_text)})")
 
         try:
@@ -206,9 +234,6 @@ async def populate_evaluations(conn):
             print(f"Errore salvataggio evaluation per {url}: {e}")
 
         # judge
-        # NOTA: usiamo strip_txt(parsed_text), coerentemente con /evaluate_judge,
-        # cosi' il judge valuta lo stesso testo "pulito" usato anche per le metriche
-        # token-level qui sopra (prima qui veniva passato il testo non normalizzato).
         try:
             judge_result = await ollama_client.judge(parsed_text=strip_txt(parsed_text), gold_text=gold_text)
             judge_score = judge_result["judge_score"]
@@ -238,6 +263,12 @@ async def populate_evaluations(conn):
             cursor.close()
         except Exception as e:
             print(f"Errore salvataggio judge per {url}: {e}")
+
+        # --- MODIFICA FONDAMENTALE (BACKGROUND TASK PREEMPTION) ---
+        # Dopo aver processato un URL, il ciclo cede il controllo all'Event Loop per 2 secondi.
+        # In questo lasso di tempo, se arriva una richiesta live per estrarre le triple o parsare un testo,
+        # il server le da' la priorita' immediata!
+        await asyncio.sleep(2)
 
     print("Popolamento evaluation completato.")
 
@@ -274,13 +305,7 @@ async def lifespan(app: FastAPI):
     # Popolamento iniziale del database con i dati del Gold Standard
     if conn:
         populate_database(conn)
-        # Pre-calcolo evaluation_results e llm_judge_results: full_gs_eval legge da qui
-        # invece di richiamare Ollama in tempo reale (vedi nota in populate_evaluations).
-        # NON si fa await qui: ogni chiamata al judge richiede circa 1-2 minuti, e con
-        # decine di URL nel gold standard un await bloccante terrebbe l'app in startup
-        # per troppo tempo, rendendo il backend irraggiungibile per il grader (che ha
-        # un timeout molto piu' breve). Si lancia come task in background: l'app diventa
-        # subito raggiungibile, il DB viene popolato man mano che i task completano.
+        # Lanciamo in background. Grazie al sleep(2) non blocchera' le richieste!
         asyncio.create_task(populate_evaluations(conn))
     yield
 
@@ -403,18 +428,8 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
         raise HTTPException(status_code=400, detail="Dominio non supportato")
     conn=http_request.app.state.db
     cursor=conn.cursor()
-    # NOTA: le metriche token-level/rouge/density/tfidf vengono ricalcolate LIVE qui
-    # (sono deterministiche e rapide), cosi' restano sempre coerenti con quello che
-    # produrrebbe /evaluate sullo stesso input, anche se populate_evaluations() non ha
-    # ancora finito il suo giro (richiede minuti per via del solo Judge). Leggerle da
-    # evaluation_results precalcolato e' stato provato e scartato: se il grader gira
-    # prima che il popolamento finisca, i valori in DB sono ancora vecchi/incompleti e
-    # la coerenza con il calcolo "manuale" del grader si rompe (verificato: 2 test
-    # falliti su "coerenza F1 aggregato" e "soglia F1"). Il LEFT JOIN su
-    # llm_judge_results invece resta: il judge_score viene letto dal valore gia'
-    # calcolato da populate_evaluations all'avvio (vedi lifespan), NON richiamando
-    # Ollama qui, perche' per il solo Judge il prof ha confermato che il precalcolo e'
-    # accettabile (slide 35 / risposta del 3 giu) ed era gia' cosi' prima e passava i test.
+    
+    # Lettura veloce dal database: non blocchiamo l'utente!
     cursor.execute(
         """
         SELECT wr.url, wr.html_text, gs.gold_text, ljr.judge_score
@@ -429,13 +444,12 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
     cursor.close()
     count = 0
     valutatore = Evaluator()
-    #articoli = GS_DOMAINS[domain]   #prendo in base al dominio il corrispettivo file dominio_gs.json che contiene il gold standard per quel dominio
-    parser = ParserFactory.create(domain)   #seleziona il parser corretto in base al dominio, se il dominio non è supportato solleva un'eccezione
-    somme = Zero_Inizializer(EvaluationOutput)    #inizializzo a zero tutte le somme che mi serviranno per fare la media alla fine
+    parser = ParserFactory.create(domain)   
+    somme = Zero_Inizializer(EvaluationOutput)    
     somma_judge=0.0
     for row in rows:
         url,html_text,gold_text,judge_score_db=row[0],row[1],row[2],row[3]
-        parsed_text = ""    # inizializziamo parsed_text a una stringa vuota, e solo se parser_json è valido e contiene "parsed_text", lo aggiorniamo
+        parsed_text = ""    
         try:
             parser_json = await parser.parser_url2(url,html_text)
             parsed_text = parser_json.get("parsed_text", "") if parser_json else ""
@@ -444,9 +458,9 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
         try:
             result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
         except Exception:
-            result = Zero_Inizializer(EvaluationOutput)   # se la valutazione fallisce, mettiamo tutto a zero
+            result = Zero_Inizializer(EvaluationOutput)   
 
-        somma_judge += judge_score_db or 0.0  # judge_score gia' pronto dal DB, nessuna chiamata live
+        somma_judge += judge_score_db or 0.0  # judge_score gia' pronto dal DB
 
         for key, value in result.items():
             if isinstance(value, dict):
@@ -455,24 +469,23 @@ async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
             else:
                 somme[key] += value
         count += 1
-    if count == 0:  # se non ci sono articoli, restituisco gli zeri per evitare la divisione per zero
+    if count == 0:  
         return FullGSEvalOutput(**somme,judge_score=0.0)
     medie = {}
     for key, value in somme.items():
         if isinstance(value, dict):
-            medie[key] = {sub_key: sub_val / count for sub_key, sub_val in value.items()}    # comprehension per calcolare la media di ogni sotto-elemento del dizionario
+            medie[key] = {sub_key: sub_val / count for sub_key, sub_val in value.items()}    
         else:
-            medie[key] = value / count   # media per i valori singoli
+            medie[key] = value / count   
     return FullGSEvalOutput(**medie,judge_score=somma_judge/count)
+
 
 #funzione per pulire il markdown
 def strip_txt(text: str) -> str:
-
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text) #grassetto
     text = re.sub(r'\_+([^_]+)\_+', r'\1', text) #corsivo
     text = re.sub(r'\#+\s?([^#]+)', r'\1', text) #titoli
     text = re.sub(r'\[([^\]]+)\]\((?:[^)\\]|\\.)*\)', r'\1', text) #link
-
     return text
 
 
@@ -486,7 +499,7 @@ async def evaluate(request: EvaluationRequest) -> EvaluationOutput:
         return EvaluationOutput(**Zero_Inizializer(EvaluationOutput))
 
 @app.post("/evaluate_judge")
-async def evaluate_judge(request: EvaluationRequest) -> JudgeOutput: #perché questo funzioni judge deve ritornare un dizionario che abbia le stesse identiche chiavi di JudgeOutput
+async def evaluate_judge(request: EvaluationRequest) -> JudgeOutput: 
     parsed_text = strip_txt(request.parsed_text)
     return await ollama_client.judge(parsed_text=parsed_text, gold_text=request.gold_text)
 
@@ -550,6 +563,7 @@ async def db_schema()->DBSchemaOutput:
             "created_at": "datetime"
         }
     )
+
 @app.post("/add_web_resource")
 async def add_web_resource(body:AddWebResourceRequest,http_request:Request)->OperationOutput:
     domain=urlparse(body.url).netloc
@@ -563,12 +577,12 @@ async def add_web_resource(body:AddWebResourceRequest,http_request:Request)->Ope
             """,
             (body.url, domain, "", body.html_text)
         )
-        conn.commit() #selve per salvare l'insert nella tabella
+        conn.commit() 
         return OperationOutput(status="ok")
     except Exception:
         return OperationOutput(status="error")
     finally:
-        cursor.close() #chiusura sia in caso di errore che di successo, evitiamo memory leak
+        cursor.close() 
 
 @app.post("/add_gold_standard")
 async def add_gold_standard(body:AddGoldStandardRequest,http_request:Request)->OperationOutput:
@@ -595,6 +609,7 @@ async def add_gold_standard(body:AddGoldStandardRequest,http_request:Request)->O
         return OperationOutput(status="error")
     finally:
         cursor.close()
+
 @app.delete("/web_resource")
 async def delete_web_resource(body:DeleteRequest,http_request:Request)->OperationOutput:
     conn=http_request.app.state.db
@@ -610,6 +625,7 @@ async def delete_web_resource(body:DeleteRequest,http_request:Request)->Operatio
         return OperationOutput(status="error")
     finally:
         cursor.close()
+
 @app.delete("/gold_standard")
 async def delete_gold_standard(body:DeleteRequest,http_request:Request)->OperationOutput:
     conn=http_request.app.state.db
@@ -650,7 +666,6 @@ async def db_stats(http_request:Request)->DBStatsOutput:
     )
     conteggio_gold={row[0]:row[1] for row in cursor.fetchall()}
 
-    # Inizializza tutti i domini a 0.0 (fallback se populate_evaluations non ha ancora girato)
     media_valutazione = {
         domain: {"token_level_eval": {"precision": 0.0, "recall": 0.0, "f1": 0.0}}
         for domain in conteggio_web

@@ -1,3 +1,5 @@
+from src.parsers.parser_imdb import ImdbParser
+from src.parsers.parser_mymovies import MyMoviesParser
 from src.parsers.parser_mypersonaltrainer import MyPersonalTrainerParser
 from src.parsers.parser_premier import PremierLeagueParser
 from src.parsers.parser_wikipedia import WikipediaParser
@@ -9,7 +11,9 @@ _AVAILABLE_PARSERS = { #in questo modo il dizionario non è creato ogni volta ch
             "www.my-personaltrainer.it" : MyPersonalTrainerParser,
             "it.wikipedia.org" : WikipediaParser,
             "www.premierleague.com" : PremierLeagueParser,
-            "www.un.org" : Parser_UN
+            "www.un.org" : Parser_UN,
+            "www.mymovies.it": MyMoviesParser,
+            "www.imdb.com": ImdbParser
         }
 
 class ParserFactory():

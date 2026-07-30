@@ -3,7 +3,7 @@ import httpx
 import json
 
 URL = "http://ollama:11434/api/generate" #l'API di ollama si raggiunge di default da questo url e invece di localhost si mette il nome del servizio per far si che funzioni su docker
-SELECTED_MODEL = "qwen3:4b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
+SELECTED_MODEL = "qwen2.5:3b" #il modello viene preliminarmente incasellato in una costante per aumentare l'alterabilità del codice
 MAX_CHARS = 1000
 
 # Ollama (con un solo modello caricato) gestisce le richieste in slot limitati: se
@@ -92,6 +92,8 @@ async def judge(parsed_text: str, gold_text: str) -> dict:
 
     return giudizio
 
+
+
 async def extract_triples(text: str) -> dict:
     """
     Estrae triple relazionali da un testo fornito utilizzando il modello LLM locale.
@@ -135,14 +137,17 @@ ESEMPIO DI FORMATO RICHIESTO:
     payload = {
         "model": SELECTED_MODEL,
         "prompt": prompt,
-        "format": "json",
-        "stream": False
-    }
+        #"format": "json", 
+        "stream": False,
+        "options": {
+            "temperature": 0.0
+            }
+        }
 
     risultato = None
     
     async with _ollama_lock:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=500.0) as client:
             last_error = None
             for attempt in range(MAX_ATTEMPTS):
                 try:

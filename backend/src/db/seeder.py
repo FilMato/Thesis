@@ -66,6 +66,28 @@ def _insert_article(cursor, domain: str, articolo: dict):
     """
     cursor.execute(query_gs, (url, gold_text))
 
+#Salva il testo estratto dal parser nella tabella parsed_results. Se l'URL è già presente, aggiorna il testo con l'ultima versione estratta.
+def save_parsed_result(conn: mariadb.Connection, url: str, parsed_text: str, parser_version: str = "1.0"):
+    cursor = conn.cursor()
+    try:
+        # Inserimento nella tabella parsed_results
+        query = """
+            INSERT INTO parsed_results (url, parsed_text, parser_version, created_at) 
+            VALUES (?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE 
+                parsed_text = VALUES(parsed_text),
+                parser_version = VALUES(parser_version),
+                created_at = NOW()
+        """
+        cursor.execute(query, (url, parsed_text, parser_version))
+        conn.commit()
+        
+    except mariadb.Error as e:
+        print(f"Errore durante il salvataggio in parsed_results per {url}: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+
 #Funzione principale esportata per popolare il database all'avvio.
 #Coordina il caricamento dei file e l'inserimento dei dati tramite le funzioni private.
 def populate_database(conn: mariadb.Connection):
