@@ -206,9 +206,18 @@ class ImdbParser(Parser):
         if not text:
             return ""
 
-        # AGGIUNTA: Rimuove la sintassi dei link Markdown mantenendo solo il testo visibile
-        # Trasforma "[Paul Thomas Anderson](/name/nm0000759...)" in "Paul Thomas Anderson"
+        # REGEX 1: Rimuove i link Markdown completi mantenendo solo il testo visibile
+        # Trasforma "[Christopher Nolan](/name/...)" in "Christopher Nolan"
         text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+        # --- NUOVE CORREZIONI REGEX ---
+        # REGEX 2: Rimuove rimasugli di link orfani tipo "[](/title/tt6723592/?ref_...)"
+        text = re.sub(r"\[\]\([^)]+\)", "", text)
+
+        # REGEX 3: Rimuove il fastidioso indicatore romano di IMDb dai nomi, es: "Christopher Nolan(I)" -> "Christopher Nolan"
+        # Cerca un (I), (II), (III) ecc. attaccato a fine parola
+        text = re.sub(r"\([IVXLCDM]+\)", "", text)
+        # -------------------------------
 
         righe = text.split("\n")
         righe_pulite = []

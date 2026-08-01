@@ -174,31 +174,56 @@ class Neo4jClient:
             logger.error(f"Errore durante la pulizia del database: {e}")
             return False
 
+    def delete_relation_and_orphans(self, subject: str, relation: str, obj: str):
+        """
+        Elimina una relazione specifica. Se il Soggetto o l'Oggetto rimangono
+        senza nessun'altra relazione nel grafo, elimina anche i nodi stessi.
+        """
+        query = """
+        MATCH (s {name: $subject})-[r]->(o {name: $obj})
+        WHERE type(r) = $relation
+        DELETE r
+        WITH s, o
+        
+        // Controlla se il Soggetto è rimasto orfano e distruggilo
+        OPTIONAL MATCH (s)-[rs]-()
+        WITH s, o, count(rs) as deg_s
+        FOREACH (ignore IN CASE WHEN deg_s = 0 THEN [1] ELSE [] END | DELETE s)
+        
+        // Controlla se l'Oggetto è rimasto orfano e distruggilo
+        WITH o
+        OPTIONAL MATCH (o)-[ro]-()
+        WITH o, count(ro) as deg_o
+        FOREACH (ignore IN CASE WHEN deg_o = 0 THEN [1] ELSE [] END | DELETE o)
+        """
+        with self._driver.session() as session:
+            session.run(query, subject=subject, relation=relation, obj=obj)
 
-# --- Esempio di utilizzo / Testing diretto ---
-if __name__ == "__main__":
-    # Test del client fuori da Docker (se eseguito direttamente in locale)
-    with Neo4jClient() as client:
-        print("Statistiche iniziali:", client.get_stats())
 
-        # Test inserimento batch (simulando l'output di Ollama)
-        ollama_extracted_json = [
-            {
-                "subject": "Christopher Nolan",
-                "subject_type": "Person",
-                "relation": "DIRECTED",
-                "object": "Inception",
-                "object_type": "Movie",
-            },
-            {
-                "subject": "Leonardo DiCaprio",
-                "subject_type": "Person",
-                "relation": "ACTED_IN",
-                "object": "Inception",
-                "object_type": "Movie",
-            },
-        ]
-
-        inserted = client.add_triples_batch(ollama_extracted_json)
-        print(f"Inserite {inserted} triple di prova.")
-        print("Statistiche aggiornate:", client.get_stats())
+    def delete_node_and_orphans(self, node_name: str):
+        """
+        Elimina un nodo e TUTTE le sue relazioni (DETACH DELETE).
+        Se a causa di questa eliminazione alcuni nodi "vicini" rimangono
+        scollegati da tutto il resto del grafo, elimina anche i vicini.
+        """
+        query = """
+        MATCH (n {name: $node_name})
+        
+        // 1. Memorizza tutti i vicini prima di distruggere il nodo
+        OPTIONAL MATCH (n)-[]-(neighbor)
+        WITH n, collect(neighbor) AS neighbors
+        
+        // 2. Elimina il nodo bersaglio e taglia tutte le frecce (relazioni)
+        DETACH DELETE n
+        
+        // 3. Passa in rassegna i vicini sopravvissuti
+        WITH [x IN neighbors WHERE x IS NOT NULL] AS valid_neighbors
+        UNWIND valid_neighbors AS neighbor
+        
+        // 4. Se un vicino ha 0 relazioni rimanenti, cancellalo
+        OPTIONAL MATCH (neighbor)-[r]-()
+        WITH neighbor, count(r) AS deg
+        FOREACH (ignore IN CASE WHEN deg = 0 THEN [1] ELSE [] END | DELETE neighbor)
+        """
+        with self._driver.session() as session:
+            session.run(query, node_name=node_name)

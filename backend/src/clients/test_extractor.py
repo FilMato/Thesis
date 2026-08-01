@@ -13,7 +13,8 @@ from src.clients import ollama_client
 async def main():
     # 1. URL da testare (ho messo uno fittizio di MYmovies per Una battaglia dopo l'altra)
     # Sostituisci questo URL con il link esatto che usi per i tuoi test
-    test_url = "https://www.imdb.com/title/tt0332452/" 
+    test_url = "https://www.imdb.com/name/nm0634240/?ref_=nv_sr_srsg_4_tt_0_nm_4_in_0_q_c" 
+    titolo="Christopher Nolan"  # Titolo del film o nome della persona per il contesto
     domain = urlparse(test_url).netloc
     
     print(f"Avvio test per il dominio: {domain}")
@@ -48,7 +49,7 @@ async def main():
     print("Invio del testo a Ollama in corso...")
     try:
         # Passiamo il testo pulito e il titolo come da accordi precedenti
-        risultato_triple = await ollama_client.extract_triples(testo_pulito)
+        risultato_triple = await ollama_client.extract_triples(testo_pulito, titolo)
         
         print("\n" + "="*50)
         print(" TRIPLE ESTRATTE DA OLLAMA")

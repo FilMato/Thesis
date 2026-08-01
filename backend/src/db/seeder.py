@@ -16,7 +16,9 @@ def _get_supported_domains(base_dir: str) -> list[str]:
             "www.my-personaltrainer.it",
             "it.wikipedia.org",
             "www.premierleague.com",
-            "www.un.org"
+            "www.un.org",
+            "www.mymovies.it",
+            "www.imdb.com"
         ]
 
 # Scorre i domini supportati e carica in memoria i rispettivi file JSON presenti nella cartella gs_data.
