@@ -312,3 +312,84 @@ async def stats_get(request: Request):
             "stats": stats,
         },
     )
+
+
+# --- ROTTE PER IL KNOWLEDGE GRAPH ---
+
+@app.get("/graph", response_class=HTMLResponse)
+async def graph_index(request: Request, success: Optional[str] = None, error: Optional[str] = None):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html", 
+        context={"request": request, "page": "graph", "success": success, "error": error}
+    )
+
+@app.get("/graph/data")
+async def get_graph_data():
+    """Proxy per scaricare i nodi e gli archi per Vis.js"""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{BACKEND_URL}/api/graph/visualize")
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {"nodes": [], "edges": []}
+
+@app.post("/graph/ask", response_class=HTMLResponse)
+async def graph_ask(request: Request, question: str = Form(...)):
+    error, answer_data = None, None
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(f"{BACKEND_URL}/api/ask_graph", json={"question": question})
+            if resp.status_code == 200:
+                answer_data = resp.json()
+            else:
+                error = f"Errore dal backend: {resp.text}"
+    except Exception as e:
+        error = f"Errore inatteso: {e}"
+        
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html", 
+        context={"request": request, "page": "graph", "question": question, "answer_data": answer_data, "error": error}
+    )
+
+@app.post("/graph/action")
+async def graph_action(
+    request: Request, 
+    action: str = Form(...),
+    url: Optional[str] = Form(None),
+    node_name: Optional[str] = Form(None),
+    subject: Optional[str] = Form(None),
+    relation: Optional[str] = Form(None),
+    object: Optional[str] = Form(None)
+):
+    error, success = None, None
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client: 
+            if action == "add_url" and url:
+                r = await client.post(f"{BACKEND_URL}/api/Add_url_to_graph", json={"url": url})
+                if r.status_code == 200: success = r.json().get("message", "Operazione avviata.")
+                else: error = r.text
+            elif action == "build_graph":
+                r = await client.post(f"{BACKEND_URL}/api/build-graph")
+                if r.status_code == 200: success = r.json().get("message", "Costruzione avviata.")
+                else: error = r.text
+            elif action == "delete_node" and node_name:
+                r = await client.request("DELETE", f"{BACKEND_URL}/api/graph/node", json={"node_name": node_name})
+                if r.status_code == 200: success = r.json().get("message", "Nodo eliminato.")
+                else: error = r.text
+            elif action == "delete_relation" and subject and relation and object:
+                r = await client.request("DELETE", f"{BACKEND_URL}/api/graph/relation", json={"subject": subject, "relation": relation, "object": object})
+                if r.status_code == 200: success = r.json().get("message", "Relazione eliminata.")
+                else: error = r.text
+            else:
+                error = "Parametri mancanti per l'azione richiesta."
+    except Exception as e:
+        error = str(e)
+        
+    params = {}
+    if success: params["success"] = success
+    if error: params["error"] = error
+    return RedirectResponse(url=f"/graph?{urlencode(params)}", status_code=303)

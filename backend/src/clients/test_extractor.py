@@ -1,3 +1,6 @@
+
+#FILE DA CANCELLARE A FINE PROGETTO
+
 import asyncio
 import json
 import sys
@@ -13,7 +16,7 @@ from src.clients import ollama_client
 async def main():
     # 1. URL da testare (ho messo uno fittizio di MYmovies per Una battaglia dopo l'altra)
     # Sostituisci questo URL con il link esatto che usi per i tuoi test
-    test_url = "https://www.imdb.com/name/nm0634240/?ref_=nv_sr_srsg_4_tt_0_nm_4_in_0_q_c" 
+    test_url = "https://www.imdb.com/title/tt0407887/?ref_=hm_tpks_i_7_pd_tp1_pbr_ic" 
     titolo="Christopher Nolan"  # Titolo del film o nome della persona per il contesto
     domain = urlparse(test_url).netloc
     
@@ -45,20 +48,7 @@ async def main():
         print("ATTENZIONE: Il parser ha restituito un testo vuoto. Impossibile estrarre le triple.")
         return
 
-    # 4. Estrazione delle triple con Ollama
-    print("Invio del testo a Ollama in corso...")
-    try:
-        # Passiamo il testo pulito e il titolo come da accordi precedenti
-        risultato_triple = await ollama_client.extract_triples(testo_pulito, titolo)
-        
-        print("\n" + "="*50)
-        print(" TRIPLE ESTRATTE DA OLLAMA")
-        print("="*50)
-        print(json.dumps(risultato_triple, indent=2, ensure_ascii=False))
-        
-    except Exception as e:
-        print(f"Errore durante l'estrazione delle triple: {e}")
-
+   
 if __name__ == "__main__":
     # Esegue il ciclo asincrono principale
     asyncio.run(main())

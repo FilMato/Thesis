@@ -227,3 +227,18 @@ class Neo4jClient:
         """
         with self._driver.session() as session:
             session.run(query, node_name=node_name)
+
+
+    def execute_read_query(self, query: str) -> list:
+        """
+        Esegue una query Cypher in sola lettura e restituisce i risultati 
+        come lista di dizionari.
+        """
+        try:
+            with self._driver.session() as session:
+                result = session.run(query)
+                # Converte i record Neo4j in normali dizionari Python
+                return [record.data() for record in result]
+        except Exception as e:
+            logger.error(f"Errore durante l'esecuzione della query Cypher RAG: {e}")
+            return [{"error": str(e)}]

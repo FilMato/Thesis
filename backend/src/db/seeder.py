@@ -72,14 +72,13 @@ def _insert_article(cursor, domain: str, articolo: dict):
 def save_parsed_result(conn: mariadb.Connection, url: str, parsed_text: str, parser_version: str = "1.0"):
     cursor = conn.cursor()
     try:
-        # Inserimento nella tabella parsed_results
+        # Rimosso created_at = NOW() dall'UPDATE per non sovrascrivere la data originale
         query = """
             INSERT INTO parsed_results (url, parsed_text, parser_version, created_at) 
             VALUES (?, ?, ?, NOW())
             ON DUPLICATE KEY UPDATE 
                 parsed_text = VALUES(parsed_text),
-                parser_version = VALUES(parser_version),
-                created_at = NOW()
+                parser_version = VALUES(parser_version)
         """
         cursor.execute(query, (url, parsed_text, parser_version))
         conn.commit()
@@ -89,7 +88,7 @@ def save_parsed_result(conn: mariadb.Connection, url: str, parsed_text: str, par
         conn.rollback()
     finally:
         cursor.close()
-
+        
 #Funzione principale esportata per popolare il database all'avvio.
 #Coordina il caricamento dei file e l'inserimento dei dati tramite le funzioni private.
 def populate_database(conn: mariadb.Connection):

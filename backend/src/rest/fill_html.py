@@ -1,3 +1,6 @@
+
+#FILE DA CANCELLARE A FINE PROGETTO
+
 import json
 import os
 import asyncio

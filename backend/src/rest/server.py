@@ -114,6 +114,9 @@ class DeleteGraphRelationRequest(BaseModel):
 class DeleteGraphNodeRequest(BaseModel):
     node_name: str
 
+class AskGraphRequest(BaseModel):
+    question: str
+
 
 # definizione dei modelli per le metriche del'evaluation
 class Metrics(BaseModel):
@@ -722,8 +725,49 @@ async def db_stats(http_request:Request)->DBStatsOutput:
         avg_eval_judge=avg_eval_judje
     )
 
+#Funzioni per il knowledge graph
+
+@app.get("/api/graph/visualize")
+async def visualize_graph():
+    try:
+        with Neo4jClient() as graph_client:
+            # La query ora estrae anche le etichette (labels) se presenti nel DB
+            query = "MATCH (s)-[r]->(o) RETURN s.name AS subject, labels(s) AS s_labels, type(r) AS relation, o.name AS object, labels(o) AS o_labels LIMIT 200"
+            results = graph_client.execute_read_query(query)
+
+            nodes, edges, node_names = [], [], set()
+
+            for row in results:
+                s, o, r = row.get("subject"), row.get("object"), row.get("relation")
+                s_labels, o_labels = row.get("s_labels", []), row.get("o_labels", [])
+                
+                s_group = s_labels[0] if s_labels else "Entity"
+                o_group = o_labels[0] if o_labels else "Entity"
+                
+                # Euristica di salvataggio: se i nodi non hanno etichette nel DB, le deduciamo dalla relazione
+                if s_group == "Entity":
+                    if r in ["ACTED_IN", "DIRECTED", "WROTE"]: s_group = "Person"
+                    elif r == "HAS_GENRE": s_group = "Movie"
+                if o_group == "Entity":
+                    if r in ["ACTED_IN", "DIRECTED", "WROTE"]: o_group = "Movie"
+                    elif r == "HAS_GENRE": o_group = "Genre"
+                    elif r == "WON": o_group = "Award"
+
+                if s not in node_names:
+                    nodes.append({"id": s, "label": s, "group": s_group})
+                    node_names.add(s)
+                if o not in node_names:
+                    nodes.append({"id": o, "label": o, "group": o_group})
+                    node_names.add(o)
+                edges.append({"from": s, "to": o, "label": r})
+            return {"nodes": nodes, "edges": edges}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/Add_url_to_graph")
-async def Add_url_to_graph(request: AddToGraphRequest, background_tasks: BackgroundTasks, http_request: Request):
+async def Add_url_to_graph(request: AddToGraphRequest, http_request: Request):
+    # NOTA: background_tasks rimosso dalla firma della funzione
+    
     domain = urlparse(request.url).netloc
     if domain not in SUPPORTED_DOMAINS:
         raise HTTPException(status_code=400, detail="Dominio non supportato")
@@ -732,12 +776,38 @@ async def Add_url_to_graph(request: AddToGraphRequest, background_tasks: Backgro
     if not conn:
         raise HTTPException(status_code=500, detail="Database MariaDB non connesso.")
     
-    # Aggiunge il task in background
-    background_tasks.add_task(processa_e_salva_url, conn, request.url, domain)
+    # 1. Controlliamo se abbiamo già il testo parsato e il titolo nel database
+    cursor = conn.cursor()
+    testo_esistente = None
+    titolo_esistente = ""
+    try:
+        cursor.execute(
+            """
+            SELECT pr.parsed_text, wr.title 
+            FROM parsed_results pr
+            JOIN web_resources wr ON pr.url = wr.url
+            WHERE pr.url = ?
+            """, 
+            (request.url,)
+        )
+        record = cursor.fetchone()
+        if record:
+            testo_esistente = record[0]
+            titolo_esistente = record[1]
+            print(f"[CACHE HIT] Testo già presente nel DB per {request.url}")
+    except Exception as e:
+        print(f"Errore durante la lettura da MariaDB: {e}")
+    finally:
+        cursor.close()
+        
+    # 2. CHIAMATA BLOCCANTE ALL'LLM
+    # L'uso di "await" costringe l'API ad aspettare la fine dell'estrazione
+    await processa_e_salva_url(conn, request.url, domain, testo_esistente, titolo_esistente)
     
+    # 3. Risposta inviata solo a operazione completata
     return {
         "status": "success", 
-        "message": f"Elaborazione dell'URL {request.url} avviata in background."
+        "message": f"Elaborazione dell'URL {request.url} completata e triple aggiunte al grafo."
     }
 
 @app.delete("/api/graph/relation")
@@ -771,64 +841,63 @@ async def Graph_delete_node(request: DeleteGraphNodeRequest):
 
 
 @app.post("/api/build-graph")
-async def build_knowledge_graph(background_tasks: BackgroundTasks, http_request: Request):
+async def build_knowledge_graph(http_request: Request):
     conn = http_request.app.state.db
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database MariaDB non connesso.")
+    # AWAIT blocca la risposta finché tutti i documenti non sono elaborati
+    await esegui_pipeline_grafo(conn)
     
-    # Aggiunge il task in background
-    background_tasks.add_task(esegui_pipeline_grafo, conn)
-    
-    return {
-        "status": "success", 
-        "message": "Costruzione del Knowledge Graph avviata in background."
-    }
+    return {"status": "success", 
+            "message": "Knowledge Graph costruito interamente."
+            }
 
-async def processa_e_salva_url(conn, url: str, domain: str):
+async def processa_e_salva_url(conn, url: str, domain: str, testo_esistente: str = None, titolo_esistente: str = ""):
     try:
         print(f"[PROCESS_URL] Inizio elaborazione per: {url}")
         
-        # 1. Scraping e Parsing
-        parser = ParserFactory.create(domain)
-        # Usiamo parser_url che fa il fetch live da internet, come richiesto in precedenza per gli url non nel db
-        risultato_parser = await parser.parser_url(url)
-        
-        if not risultato_parser or not risultato_parser.get("parsed_text"):
-            print(f"[PROCESS_URL] ERRORE: Nessun testo estratto da {url}")
-            return
+        if testo_esistente:
+            parsed_text = testo_esistente
+            titolo = titolo_esistente
+            print(f"[{url}] Salto lo scraping: uso il testo dal DB.")
+        else:
+            print(f"[{url}] Avvio lo scraping web...")
+            # 1. Scraping e Parsing
+            parser = ParserFactory.create(domain)
+            risultato_parser = await parser.parser_url(url)
+            
+            if not risultato_parser or not risultato_parser.get("parsed_text"):
+                print(f"[PROCESS_URL] ERRORE: Nessun testo estratto da {url}")
+                return
 
-        parsed_text = risultato_parser["parsed_text"]
-        html_text = risultato_parser.get("html_text", "")
-        titolo = risultato_parser.get("title", "")
+            parsed_text = risultato_parser["parsed_text"]
+            html_text = risultato_parser.get("html_text", "")
+            titolo = risultato_parser.get("title", "")
 
-        # 2. Salvataggio su MariaDB (nella tabella web_resources e parsed_results)
-        cursor = conn.cursor()
-        # Salviamo o aggiorniamo l'html
-        cursor.execute(
-            """
-            INSERT INTO web_resources (url, domain, title, html_text) 
-            VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE 
-                domain = VALUES(domain),
-                title = VALUES(title),
-                html_text = VALUES(html_text)
-            """,
-            (url, domain, titolo, html_text)
-        )
-        # Salviamo o aggiorniamo il testo parsato
-        cursor.execute(
-            """
-            INSERT INTO parsed_results (url, parsed_text, parser_version)
-            VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-                parsed_text = VALUES(parsed_text),
-                parser_version = VALUES(parser_version)
-            """,
-            (url, parsed_text, "1.0")
-        )
-        conn.commit()
-        cursor.close()
-        print(f"[PROCESS_URL] Testo salvato in MariaDB per: {url}")
+            # 2. Salvataggio su MariaDB (nella tabella web_resources e parsed_results)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO web_resources (url, domain, title, html_text) 
+                VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE 
+                    domain = VALUES(domain),
+                    title = VALUES(title),
+                    html_text = VALUES(html_text)
+                """,
+                (url, domain, titolo, html_text)
+            )
+            cursor.execute(
+                """
+                INSERT INTO parsed_results (url, parsed_text, parser_version)
+                VALUES (?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    parsed_text = VALUES(parsed_text),
+                    parser_version = VALUES(parser_version)
+                """,
+                (url, parsed_text, "1.0")
+            )
+            conn.commit()
+            cursor.close()
+            print(f"[PROCESS_URL] Testo salvato in MariaDB per: {url}")
 
         # 3. Estrazione Triple con Ollama
         print(f"[PROCESS_URL] Analisi LLM in corso per: {titolo} ({url})")
@@ -901,3 +970,51 @@ async def esegui_pipeline_grafo(conn):
             await asyncio.sleep(2)
             
     print("Pipeline verso Neo4j completata con successo!")
+
+
+@app.post("/api/ask_graph")
+async def ask_knowledge_graph(request: AskGraphRequest):
+    print(f"[GraphRAG] Domanda ricevuta: {request.question}")
+    
+    # 1. Text-to-Cypher (L'unica vera fase di AI)
+    cypher_query = await ollama_client.generate_cypher(request.question)
+    if not cypher_query:
+        raise HTTPException(status_code=500, detail="Impossibile generare la query Cypher.")
+    
+    print(f"[GraphRAG] Query generata:\n{cypher_query}")
+    
+    # 2. Esecuzione su Neo4j
+    try:
+        with Neo4jClient() as graph_client:
+            db_results = graph_client.execute_read_query(cypher_query)
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=f"Errore Neo4j: {str(e)}")
+         
+    print(f"[GraphRAG] Risultati DB: {db_results}")
+    
+    # Intercettazione errori Cypher
+    if len(db_results) > 0 and "error" in db_results[0]:
+        return {
+            "question": request.question,
+            "cypher_query": cypher_query,
+            "raw_data": [],
+            "answer": "La domanda è troppo complessa o la query generata non è valida."
+        }
+
+    # 3. Formattazione Deterministica (Addio LLM Text-to-Text!)
+    if not db_results:
+        final_answer = "Mi dispiace, ma non ho trovato informazioni a riguardo nel Knowledge Graph."
+    else:
+        # Estraiamo dinamicamente i valori di qualsiasi query Cypher
+        elementi = []
+        for riga in db_results:
+            elementi.append(", ".join([str(v) for v in riga.values()]))
+        
+        final_answer = "Ecco i risultati trovati nel Knowledge Graph:\n" + "\n".join([f"- {e}" for e in elementi])
+    
+    return {
+        "question": request.question,
+        "cypher_query": cypher_query,
+        "raw_data": db_results,
+        "answer": final_answer
+    }

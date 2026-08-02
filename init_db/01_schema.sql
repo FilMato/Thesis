@@ -18,7 +18,7 @@ CREATE TABLE gold_standard (
 -- 3. Tabella: parsed_results (utile per tracking e aggregazioni)
 CREATE TABLE parsed_results (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    url VARCHAR(768),
+    url VARCHAR(768) UNIQUE,
     parsed_text LONGTEXT,
     parser_version VARCHAR(50),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

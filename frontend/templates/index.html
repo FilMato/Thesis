@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Web Parser UI</title>
+    
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
     <style>
         /* ── BASE ─────────────────────────────────────────────── */
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -106,6 +109,7 @@
         }
         .home-card:nth-child(2) { border-top-color: #43a047; }
         .home-card:nth-child(3) { border-top-color: #fb8c00; }
+        .home-card:nth-child(4) { border-top-color: #8e24aa; }
         .home-card h2 { font-size: 1rem; margin-bottom: 6px; color: #1a237e; }
         .home-card p  { font-size: 0.83rem; color: #666; line-height: 1.5; }
 
@@ -134,6 +138,12 @@
         }
         .mode-toggle input[type=radio]:checked + label { background: #1a237e; color: #fff; }
         .mode-hint { font-size: 0.72rem; color: #888; margin-top: 3px; }
+
+        /* ── GRID LAYOUT GRAFO ────────────────────────────────── */
+        .graph-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        #mynetwork { width: 100%; height: 600px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; }
+        .chat-box { background: #e3f2fd; padding: 15px; border-radius: 6px; margin-top: 15px; border-left: 4px solid #1e88e5; }
+        .cypher-box { background: #333; color: #4af626; padding: 10px; font-family: monospace; border-radius: 4px; font-size: 0.85rem; margin-top: 10px; white-space: pre-wrap;}
     </style>
 </head>
 <body>
@@ -145,6 +155,7 @@
     <a href="/parser"         class="{{ 'active' if page == 'parser' else '' }}">Parser &amp; Evaluation</a>
     <a href="/gold-standard"  class="{{ 'active' if page == 'gold_standard' else '' }}">Gold Standard</a>
     <a href="/stats"          class="{{ 'active' if page == 'stats' else '' }}">Statistiche</a>
+    <a href="/graph"          class="{{ 'active' if page == 'graph' else '' }}">Knowledge Graph</a>
 </nav>
 
 <main>
@@ -166,6 +177,10 @@
         <a class="home-card" href="/stats">
             <h2>📊 Statistiche</h2>
             <p>Metriche aggregate per dominio: precision, recall, F1, judge score.</p>
+        </a>
+        <a class="home-card" href="/graph">
+            <h2>🕸️ Knowledge Graph</h2>
+            <p>Esplora, interroga e gestisci il grafo della conoscenza.</p>
         </a>
     </div>
 
@@ -555,6 +570,133 @@
         <div class="alert alert-error">Impossibile caricare le statistiche dal backend.</div>
     {% endif %}
 
+    {# ══════════════════ KNOWLEDGE GRAPH ════════════════════════════ #}
+{% elif page == 'graph' %}
+
+    <h1>🧠 Knowledge Graph Dashboard</h1>
+
+    {% if error %}<div class="alert alert-error">⚠️ {{ error }}</div>{% endif %}
+    {% if success %}<div class="alert alert-success">✅ {{ success }}</div>{% endif %}
+
+    <div class="graph-controls">
+        <!-- COLONNA SINISTRA: Interazione -->
+        <div>
+            <!-- Pannello Domande -->
+            <div class="panel">
+                <h2>💬 Fai una domanda al Grafo (GraphRAG)</h2>
+                <form method="post" action="/graph/ask">
+                    <div class="row">
+                        <input type="text" name="question" placeholder="Es. In quali film ha recitato Leonardo DiCaprio?" required value="{{ question or '' }}">
+                        <button class="btn-blue" type="submit">Chiedi</button>
+                    </div>
+                </form>
+                
+                {% if answer_data %}
+                    <div class="chat-box">
+                        <strong>Risposta:</strong>
+                        <p style="margin-top: 10px; white-space: pre-wrap;">{{ answer_data.answer }}</p>
+                        
+                        <details style="margin-top: 15px; font-size: 0.85rem; cursor: pointer;">
+                            <summary>Visualizza la Query Cypher Generata (Debug)</summary>
+                            <div class="cypher-box">{{ answer_data.cypher_query }}</div>
+                        </details>
+                    </div>
+                {% endif %}
+            </div>
+
+            <!-- Pannello Gestione Grafo -->
+            <div class="panel">
+                <h2>⚙️ Gestione Grafo</h2>
+                
+                <h3 style="margin-top:15px">Aggiungi Singolo URL</h3>
+                <form method="post" action="/graph/action">
+                    <input type="hidden" name="action" value="add_url">
+                    <div class="row">
+                        <input type="text" name="url" placeholder="URL da aggiungere..." required>
+                        <button class="btn-green" type="submit">Estrai</button>
+                    </div>
+                </form>
+
+                <h3 style="margin-top:15px">Costruzione Massiva (Da DB)</h3>
+                <form method="post" action="/graph/action">
+                    <input type="hidden" name="action" value="build_graph">
+                    <button class="btn-dark" type="submit" style="width: 100%">Costruisci Grafo Intero (Background Task)</button>
+                </form>
+
+                <hr style="margin: 20px 0; border: 0; border-top: 1px solid #ddd;">
+
+                <h3>Elimina Nodo e Relazioni</h3>
+                <form method="post" action="/graph/action">
+                    <input type="hidden" name="action" value="delete_node">
+                    <div class="row">
+                        <input type="text" name="node_name" placeholder="Nome esatto del nodo..." required>
+                        <button class="btn-red" type="submit">Elimina Nodo</button>
+                    </div>
+                </form>
+
+                <h3 style="margin-top:15px">Elimina Specifica Relazione</h3>
+                <form method="post" action="/graph/action">
+                    <input type="hidden" name="action" value="delete_relation">
+                    <div class="row">
+                        <input type="text" name="subject" placeholder="Soggetto" required>
+                        <input type="text" name="relation" placeholder="Relazione" required>
+                        <input type="text" name="object" placeholder="Oggetto" required>
+                        <button class="btn-red" type="submit">Elimina</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- COLONNA DESTRA: Visualizzazione -->
+        <div>
+            <div class="panel" style="padding: 10px;">
+                <h2 style="margin-left: 10px;">🕸️ Esploratore Visuale</h2>
+                <div id="mynetwork"></div>
+                <p style="font-size: 0.8rem; color: #888; text-align: center; margin-top: 5px;">*Mostra un campione massimo di 200 relazioni</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        async function drawGraph() {
+            try {
+                const response = await fetch('/graph/data');
+                const data = await response.json();
+                
+                const container = document.getElementById('mynetwork');
+                const options = {
+                    nodes: {
+                        shape: 'dot', 
+                        size: 16, 
+                        font: { size: 14, color: '#333' }, 
+                        borderWidth: 2
+                    },
+                    edges: {
+                        font: { size: 12, align: 'middle' },
+                        color: { color: '#888', highlight: '#1e88e5' },
+                        arrows: { to: { enabled: true, scaleFactor: 0.5 } }
+                    },
+                    // MAPPA DEI COLORI PER CATEGORIA
+                    groups: {
+                        Person: { color: { background: '#c8e6c9', border: '#388e3c' } }, // Verde
+                        Movie:  { color: { background: '#bbdefb', border: '#1976d2' } }, // Blu
+                        Genre:  { color: { background: '#e1bee7', border: '#8e24aa' } }, // Viola
+                        Award:  { color: { background: '#fff9c4', border: '#fbc02d' } }, // Oro
+                        Entity: { color: { background: '#e3f2fd', border: '#1e88e5' } }  // Azzurro Default
+                    },
+                    physics: {
+                        forceAtlas2Based: { gravitationalConstant: -26, centralGravity: 0.005, springLength: 230, springConstant: 0.18 },
+                        maxVelocity: 146, 
+                        solver: 'forceAtlas2Based', 
+                        timestep: 0.35, 
+                        stabilization: { iterations: 150 }
+                    }
+                };
+                const network = new vis.Network(container, data, options);
+            } catch(err) { console.error("Errore nel caricamento del grafo:", err); }
+        }
+        if (document.getElementById('mynetwork')) { drawGraph(); }
+    </script>
 {% endif %}{# fine selezione pagina #}
 
 </main>
