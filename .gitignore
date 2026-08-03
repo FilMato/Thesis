@@ -1,2 +1,16 @@
+# --- Ollama & Modelli ---
 ollama_data/
+
+# --- Log ---
 *.log
+
+# --- Dati Database ---
+mariadb_data/
+neo4j_data/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+
+# --- Editor e IDE ---
+.vscode/
