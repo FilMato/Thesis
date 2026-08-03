@@ -8,9 +8,8 @@ from neo4j import GraphDatabase, Driver
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Neo4jClient")
 
-
+# Client per la gestione delle operazioni CRUD sul Knowledge Graph di Neo4j.
 class Neo4jClient:
-    """Client per la gestione delle operazioni CRUD sul Knowledge Graph di Neo4j."""
 
     def __init__(
         self,
@@ -26,8 +25,8 @@ class Neo4jClient:
 
         self._connect()
 
+    #Inizializza la connessione con il cluster Neo4j e verifica la connettività.
     def _connect(self) -> None:
-        """Inizializza la connessione con il cluster Neo4j e verifica la connettività."""
         try:
             self._driver = GraphDatabase.driver(
                 self.uri, auth=(self.user, self.password)
@@ -37,9 +36,8 @@ class Neo4jClient:
         except Exception as e:
             logger.error(f"Errore critico durante la connessione a Neo4j: {e}")
             raise e
-
+    # Chiude il driver e rilascia le risorse di rete.
     def close(self) -> None:
-        """Chiude il driver e rilascia le risorse di rete."""
         if self._driver:
             self._driver.close()
             logger.info("Connessione a Neo4j chiusa correttamente.")
@@ -50,20 +48,16 @@ class Neo4jClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    # Sanitizza i nomi di Tipi di Nodi e Relazioni per prevenire errori di sintassi Cypher.
     @staticmethod
     def _sanitize_identifier(identifier: str) -> str:
-        """
-        Sanifica i nomi di Tipi di Nodi e Relazioni per prevenire errori di sintassi Cypher.
-        Converte spazi in underscore, rimuove caratteri speciali e trasforma in maiuscolo se relazione.
-        """
         if not identifier:
             return "ENTITY"
-        # Mantiene solo caratteri alfanumerici e underscore
         sanitized = re.sub(r"[^\w]", "_", identifier.strip())
-        # Rimuove underscore duplicati o in testa/coda
         sanitized = re.sub(r"_+", "_", sanitized).strip("_")
         return sanitized if sanitized else "ENTITY"
 
+    #Aggiunge una singola tripla (Soggetto -[Relazione]-> Oggetto) al grafo.Utilizza MERGE per evitare la duplicazione dei nodi.
     def add_triple(
         self,
         subject: str,
@@ -73,10 +67,7 @@ class Neo4jClient:
         obj_type: str,
         properties: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """
-        Aggiunge una singola tripla (Soggetto -[Relazione]-> Oggetto) al grafo.
-        Utilizza MERGE per evitare la duplicazione dei nodi.
-        """
+        
         if not subject or not obj or not relation:
             logger.warning("Impossibile inserire tripla: dati mancanti.")
             return False
@@ -113,12 +104,8 @@ class Neo4jClient:
             logger.error(f"Errore durante l'inserimento della tripla: {e}")
             return False
 
+    #Aggiunge un batch di triple al grafo. Restituisce il numero di triple inserite con successo.
     def add_triples_batch(self, triples: List[Dict[str, Any]]) -> int:
-        """
-        Inserisce un elenco di triple in batch (es. quelle estratte dal JSON di Ollama).
-        Ogni elemento del dizionario deve contenere:
-        'subject', 'subject_type', 'relation', 'object', 'object_type'
-        """
         count = 0
         for item in triples:
             success = self.add_triple(
@@ -136,9 +123,9 @@ class Neo4jClient:
 
         logger.info(f"Batch completato: {count}/{len(triples)} triple inserite.")
         return count
-
+    
+    #Restituisce il numero totale di nodi e relazioni nel Knowledge Graph.
     def get_stats(self) -> Dict[str, int]:
-        """Restituisce il numero totale di nodi e relazioni nel Knowledge Graph."""
         query = """
         MATCH (n)
         OPTIONAL MATCH (n)-[r]->()
@@ -157,11 +144,8 @@ class Neo4jClient:
 
         return {"nodes": 0, "relationships": 0}
 
+    # Svuota il database
     def clear_database(self) -> bool:
-        """
-        Svuota completamente il database Neo4j.
-        UTILE PER TEST E RESET AMBIENTE. USARE CON CAUTELA!
-        """
         query = "MATCH (n) DETACH DELETE n"
         try:
             with self._driver.session() as session:
@@ -174,22 +158,17 @@ class Neo4jClient:
             logger.error(f"Errore durante la pulizia del database: {e}")
             return False
 
+    # Elimina una relazione specifica e , se rimangono nodi senza relazioni, elimina anch'essi.
     def delete_relation_and_orphans(self, subject: str, relation: str, obj: str):
-        """
-        Elimina una relazione specifica. Se il Soggetto o l'Oggetto rimangono
-        senza nessun'altra relazione nel grafo, elimina anche i nodi stessi.
-        """
         query = """
         MATCH (s {name: $subject})-[r]->(o {name: $obj})
         WHERE type(r) = $relation
         DELETE r
         WITH s, o
-        
         // Controlla se il Soggetto è rimasto orfano e distruggilo
         OPTIONAL MATCH (s)-[rs]-()
         WITH s, o, count(rs) as deg_s
         FOREACH (ignore IN CASE WHEN deg_s = 0 THEN [1] ELSE [] END | DELETE s)
-        
         // Controlla se l'Oggetto è rimasto orfano e distruggilo
         WITH o
         OPTIONAL MATCH (o)-[ro]-()
@@ -199,27 +178,18 @@ class Neo4jClient:
         with self._driver.session() as session:
             session.run(query, subject=subject, relation=relation, obj=obj)
 
-
+    # Elimina un nodo e tutte le sue relazioni. Se a causa di questa eliminazione altri nodi rimangono scollegati da tutto il resto del grafo, elimina anche questi.
     def delete_node_and_orphans(self, node_name: str):
-        """
-        Elimina un nodo e TUTTE le sue relazioni (DETACH DELETE).
-        Se a causa di questa eliminazione alcuni nodi "vicini" rimangono
-        scollegati da tutto il resto del grafo, elimina anche i vicini.
-        """
         query = """
         MATCH (n {name: $node_name})
-        
         // 1. Memorizza tutti i vicini prima di distruggere il nodo
         OPTIONAL MATCH (n)-[]-(neighbor)
         WITH n, collect(neighbor) AS neighbors
-        
         // 2. Elimina il nodo bersaglio e taglia tutte le frecce (relazioni)
         DETACH DELETE n
-        
         // 3. Passa in rassegna i vicini sopravvissuti
         WITH [x IN neighbors WHERE x IS NOT NULL] AS valid_neighbors
         UNWIND valid_neighbors AS neighbor
-        
         // 4. Se un vicino ha 0 relazioni rimanenti, cancellalo
         OPTIONAL MATCH (neighbor)-[r]-()
         WITH neighbor, count(r) AS deg
@@ -228,17 +198,13 @@ class Neo4jClient:
         with self._driver.session() as session:
             session.run(query, node_name=node_name)
 
-
+    # Legge i risultati di una query Cypher e li restituisce come lista di dizionari.
     def execute_read_query(self, query: str) -> list:
-        """
-        Esegue una query Cypher in sola lettura e restituisce i risultati 
-        come lista di dizionari.
-        """
         try:
             with self._driver.session() as session:
                 result = session.run(query)
                 # Converte i record Neo4j in normali dizionari Python
                 return [record.data() for record in result]
         except Exception as e:
-            logger.error(f"Errore durante l'esecuzione della query Cypher RAG: {e}")
+            logger.error(f"Errore durante l'esecuzione della query Cypher : {e}")
             return [{"error": str(e)}]

@@ -367,27 +367,32 @@ async def graph_action(
 ):
     error, success = None, None
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client: 
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            r = None
             if action == "add_url" and url:
                 r = await client.post(f"{BACKEND_URL}/api/Add_url_to_graph", json={"url": url})
-                if r.status_code == 200: success = r.json().get("message", "Operazione avviata.")
-                else: error = r.text
             elif action == "build_graph":
                 r = await client.post(f"{BACKEND_URL}/api/build-graph")
-                if r.status_code == 200: success = r.json().get("message", "Costruzione avviata.")
-                else: error = r.text
             elif action == "delete_node" and node_name:
                 r = await client.request("DELETE", f"{BACKEND_URL}/api/graph/node", json={"node_name": node_name})
-                if r.status_code == 200: success = r.json().get("message", "Nodo eliminato.")
-                else: error = r.text
             elif action == "delete_relation" and subject and relation and object:
                 r = await client.request("DELETE", f"{BACKEND_URL}/api/graph/relation", json={"subject": subject, "relation": relation, "object": object})
-                if r.status_code == 200: success = r.json().get("message", "Relazione eliminata.")
-                else: error = r.text
             else:
                 error = "Parametri mancanti per l'azione richiesta."
+
+            # --- GESTIONE ERRORI PULITA ---
+            if r is not None:
+                if r.status_code == 200: 
+                    success = r.json().get("message", "Operazione completata.")
+                else:
+                    # Estraiamo solo il testo del 'detail' ignorando le parentesi del JSON
+                    try:
+                        error = r.json().get("detail", r.text)
+                    except:
+                        error = r.text
+
     except Exception as e:
-        error = str(e)
+        error = f"Errore di connessione: {str(e)}"
         
     params = {}
     if success: params["success"] = success

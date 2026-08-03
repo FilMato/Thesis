@@ -1,161 +1,23 @@
 import os
-import re
 import sys
 import time
 import asyncio
 import mariadb 
-import httpx
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from pydantic import BaseModel, Field
-from urllib.parse import urlparse
-from typing import Optional,Any
-from clients import ollama_client
-from neo.neo4j_client import Neo4jClient
-
-#importo per evaluation
-from src.evaluator.evaluator import Evaluator
-#importo factory per parser
-from src.factory.parserfactory import ParserFactory
-#importo seeder per popolamento iniziale del database
-from src.db.seeder import populate_database
-
-# --- BLOCCO DI CODICE DA CANCELLARE DOPO AVER MODIFICATO CORRETTAMENTE LE FUNZIONI DELL'API PER USARE IL DATABASE INVECE DEI FILE JSON ---
 import json
-base_dir = os.path.dirname(os.path.abspath(__file__))
-percorso_domains = os.path.join(base_dir, "..", "..", "domains.json")
-try:
-    with open(percorso_domains, "r", encoding="utf-8") as f:
-        dati_json = json.load(f)
-        SUPPORTED_DOMAINS = dati_json.get("domains", [])
-except FileNotFoundError:   # Fallback in caso di problemi di percorso prendo i domini manualmente
-    SUPPORTED_DOMAINS = [
-        "www.my-personaltrainer.it",
-        "it.wikipedia.org",
-        "www.premierleague.com",
-        "www.un.org",
-        "www.mymovies.it",
-        "www.imdb.com"
-    ]
-# --- FINE BLOCCO DA CANCELLARE -----------------------------------------------------------------------------------------------------------------
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 
-#definizione classi pydantic per i corpi delle richieste e definizione endpoints
-class ParseOutput(BaseModel):
-    url: str
-    domain: str
-    title: str
-    html_text: str
-    parsed_text: str
+# Import interni
+from src.db.seeder import populate_database
+from src.evaluator.evaluator import Evaluator
+from src.factory.parserfactory import ParserFactory
+from clients import ollama_client
+from src.rest.utility import strip_txt
 
-class PostParseRequest(BaseModel):  #input di post/parse
-    url: str
-    local:Optional[bool]=False
-
-class DomainsOutput(BaseModel):
-    domains: list[str]
-
-class GoldStandardUrlsOutput(BaseModel):
-    gold_standard_urls: list[str]
-
-class GSOutput(BaseModel):
-    url: str
-    domain: str
-    title: str
-    html_text: str
-    gold_text: str
-
-class FullGSOutput(BaseModel):
-    gold_standard: list[GSOutput]
-
-class EvaluationRequest(BaseModel): #input di post/evaluate
-    parsed_text: str
-    gold_text: str
-
-class StatusOutput(BaseModel):
-    backend:str
-    database:str
-    ollama:str
-
-class DBSchemaOutput(BaseModel):
-    web_resources:dict[str,str]
-    gold_standard:dict[str,str]
-    parsed_results:dict[str,str]
-    evaluation_results:dict[str,str]
-    llm_judge_results:dict[str,str]
-
-class AddWebResourceRequest(BaseModel):
-    url:str
-    html_text:str
-
-class OperationOutput(BaseModel):
-    status:str
-
-class AddGoldStandardRequest(BaseModel):
-    url:str
-    gold_text:str
-
-class DeleteRequest(BaseModel):
-    url:str
-
-class DBStatsOutput(BaseModel):
-    web_resources:dict[str,int]
-    gold_standard:dict[str,int]
-    avg_eval:dict[str,Any]
-    avg_eval_judge:dict[str,Any]
-
-class AddToGraphRequest(BaseModel):
-    url: str
-
-class DeleteGraphRelationRequest(BaseModel):
-    subject: str
-    relation: str
-    object: str
-
-class DeleteGraphNodeRequest(BaseModel):
-    node_name: str
-
-class AskGraphRequest(BaseModel):
-    question: str
-
-
-# definizione dei modelli per le metriche del'evaluation
-class Metrics(BaseModel):
-    precision: float
-    recall: float
-    f1: float
-class DensityMetrics(BaseModel):
-    score_gold_standard: float = Field(alias="Score gold standard")
-    score_parsed_text: float = Field(alias="Score parsed text")
-    Difference: float
-
-class EvaluationOutput(BaseModel):
-    token_level_eval: Metrics
-    rouge_2_eval: Metrics
-    information_density_evaluation: DensityMetrics
-    tf_idf_cosine_similarity: float = Field(alias="TF-IDF_cosine_similarity")
-
-class FullGSEvalOutput(EvaluationOutput):
-    judge_score:float
-
-class JudgeOutput(BaseModel):
-    model_name: str
-    judge_score: int #da vedere forse deve essere int
-    judge_feedback: str
-
-def Zero_Inizializer(model_class: type[BaseModel]) -> dict:   #Legge un modello Pydantic e crea un dizionario con la stessa struttura inizializzato a 0.0
-    zero_dict = {}
-    for field_name, field_info in model_class.model_fields.items():
-        key = field_info.alias if field_info.alias else field_name  # Se abbiamo usato un alias (es. "TF-IDF_cosine_similarity") usiamo quello, altrimenti il nome normale
-        field_type = field_info.annotation
-        if isinstance(field_type, type) and issubclass(field_type, BaseModel):  # Se il campo è un'altra classe Pydantic (es. Metrics o DensityMetrics) facciamo ricorsione
-            zero_dict[key] = Zero_Inizializer(field_type)
-        else:   # Altrimenti assumiamo che sia un valore singolo e lo mettiamo a 0.0
-            zero_dict[key] = 0.0
-    return zero_dict
+# Import dei Routers appena creati
+from src.rest.routers import evaluation, database, graph
 
 async def populate_evaluations(conn):
-    # NOTA: questa funzione pre-calcola evaluation_results e llm_judge_results all'avvio,
-    # cosi' full_gs_eval puo' leggere il judge_score gia' pronto dal DB.
     print("Avvio popolamento evaluation_results e llm_judge_results...")
     cursor = conn.cursor()
     cursor.execute(
@@ -163,13 +25,9 @@ async def populate_evaluations(conn):
         SELECT DISTINCT wr.url, wr.domain, wr.html_text, gs.gold_text
         FROM web_resources wr
         JOIN gold_standard gs ON wr.url = gs.url
-        
-        -- Controlliamo cosa c'è già nel database
         LEFT JOIN parsed_results pr ON wr.url = pr.url
         LEFT JOIN llm_judge_results ljr ON wr.url = ljr.url
         LEFT JOIN evaluation_results er ON wr.url = er.url
-        
-        -- Filtriamo: prendiamo l'URL SOLO se manca in ALMENO UNA delle tabelle finali
         WHERE pr.url IS NULL 
            OR ljr.url IS NULL 
            OR er.url IS NULL
@@ -183,16 +41,14 @@ async def populate_evaluations(conn):
     for row in rows:
         url, domain, html_text, gold_text = row[0], row[1], row[2], row[3]
 
-        # parsing
         try:
             parser = ParserFactory.create(domain)
             parser_json = await parser.parser_url2(url, html_text)
             parsed_text = parser_json.get("parsed_text", "") if parser_json else ""
-        except Exception:
+        except Exception as e:
             print(f"\n[ERRORE PARSER] Crash su {url}: {e}\n", flush=True)
             parsed_text = ""
 
-        # Salvataggio del testo parsato nel DB
         if parsed_text:
             try:
                 cursor_p = conn.cursor()
@@ -201,8 +57,7 @@ async def populate_evaluations(conn):
                     INSERT INTO parsed_results (url, parsed_text, parser_version)
                     VALUES (?, ?, ?)
                     ON DUPLICATE KEY UPDATE
-                        parsed_text = VALUES(parsed_text),
-                        parser_version = VALUES(parser_version)
+                        parsed_text = VALUES(parsed_text), parser_version = VALUES(parser_version)
                     """,
                     (url, parsed_text, "1.0")
                 )
@@ -212,17 +67,10 @@ async def populate_evaluations(conn):
             except Exception as e:
                 print(f"Errore salvataggio parsed_results per {url}: {e}")
 
-        # evaluation
         try:
             result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
-            precision = result["token_level_eval"]["precision"]
-            recall = result["token_level_eval"]["recall"]
-            f1 = result["token_level_eval"]["f1"]
-            extra = {
-                "rouge_2_eval": result["rouge_2_eval"],
-                "information_density_evaluation": result["information_density_evaluation"],
-                "TF-IDF_cosine_similarity": result["TF-IDF_cosine_similarity"]
-            }
+            precision, recall, f1 = result["token_level_eval"]["precision"], result["token_level_eval"]["recall"], result["token_level_eval"]["f1"]
+            extra = {"rouge_2_eval": result["rouge_2_eval"], "information_density_evaluation": result["information_density_evaluation"], "TF-IDF_cosine_similarity": result["TF-IDF_cosine_similarity"]}
         except Exception:
             precision, recall, f1 = 0.0, 0.0, 0.0
             extra = {}
@@ -236,10 +84,7 @@ async def populate_evaluations(conn):
                 INSERT INTO evaluation_results (url, precision_score, recall_score, f1_score, extra_metrics)
                 VALUES (?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
-                    precision_score = VALUES(precision_score),
-                    recall_score = VALUES(recall_score),
-                    f1_score = VALUES(f1_score),
-                    extra_metrics = VALUES(extra_metrics)
+                    precision_score = VALUES(precision_score), recall_score = VALUES(recall_score), f1_score = VALUES(f1_score), extra_metrics = VALUES(extra_metrics)
                 """,
                 (url, precision, recall, f1, json.dumps(extra))
             )
@@ -248,16 +93,11 @@ async def populate_evaluations(conn):
         except Exception as e:
             print(f"Errore salvataggio evaluation per {url}: {e}")
 
-        # judge
         try:
             judge_result = await ollama_client.judge(parsed_text=strip_txt(parsed_text), gold_text=gold_text)
-            judge_score = judge_result["judge_score"]
-            model_name = judge_result["model_name"]
-            judge_feedback = judge_result["judge_feedback"]
+            judge_score, model_name, judge_feedback = judge_result["judge_score"], judge_result["model_name"], judge_result["judge_feedback"]
         except Exception:
-            judge_score = 0
-            model_name = ""
-            judge_feedback = ""
+            judge_score, model_name, judge_feedback = 0, "", ""
 
         print(f"[populate_evaluations] {url} -> judge_score={judge_score}")
 
@@ -268,9 +108,7 @@ async def populate_evaluations(conn):
                 INSERT INTO llm_judge_results (url, model_name, judge_score, judge_feedback)
                 VALUES (?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
-                    model_name = VALUES(model_name),
-                    judge_score = VALUES(judge_score),
-                    judge_feedback = VALUES(judge_feedback)
+                    model_name = VALUES(model_name), judge_score = VALUES(judge_score), judge_feedback = VALUES(judge_feedback)
                 """,
                 (url, model_name, judge_score, judge_feedback)
             )
@@ -279,15 +117,9 @@ async def populate_evaluations(conn):
         except Exception as e:
             print(f"Errore salvataggio judge per {url}: {e}")
 
-        # Dopo aver processato un URL, il ciclo cede il controllo all'Event Loop per 2 secondi.
-        # In questo lasso di tempo, se arriva una richiesta live per estrarre le triple o parsare un testo,
-        # il server le da' la priorita' immediata!
         await asyncio.sleep(2)
-
     print("Popolamento evaluation completato.")
 
-
-# Questa funzione serve come doppio controllo per assicurarsi che il backend non si avvii finché MariaDB non è pronto. Anche se abbiamo messo un healthcheck nel docker-compose.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     max_retries = 5
@@ -315,706 +147,18 @@ async def lifespan(app: FastAPI):
             time.sleep(delay_seconds)
 
     app.state.db = conn
-
-    # Popolamento iniziale del database con i dati del Gold Standard
     if conn:
         populate_database(conn)
-        # Lanciamo in background. Grazie al sleep(2) non blocchera' le richieste!
         asyncio.create_task(populate_evaluations(conn))
     yield
 
-    # Fase di spegnimento
     if app.state.db:
         app.state.db.close()
         print("Connessione a MariaDB chiusa correttamente.")
 
-
 app = FastAPI(lifespan=lifespan)
 
-
-@app.post("/parse")
-async def post_parse(body: PostParseRequest,http_request:Request)-> ParseOutput:
-    domain = urlparse(body.url).netloc
-    if domain not in SUPPORTED_DOMAINS:
-        raise HTTPException(status_code=400, detail="Dominio non supportato")
-    parser = ParserFactory.create(domain)   #seleziona il parser corretto in base al dominio, se il dominio non è supportato solleva un'eccezione
-    if body.local:
-        conn=http_request.app.state.db
-        cursor=conn.cursor()
-        cursor.execute(
-            "SELECT html_text FROM web_resources WHERE url = ?",
-            (body.url,)
-        )
-        row=cursor.fetchone()
-        cursor.close()
-        if not row:
-            raise HTTPException(status_code=404,detail="URL non trovato nelo DB")
-        try:
-            risultato = await parser.parser_url2(body.url, row[0])
-            return risultato
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    else:
-        try:
-            risultato=await parser.parser_url(body.url)
-            return risultato
-        except Exception as e:
-            raise HTTPException(status_code=502,detail=f"URL irragiungibile: {str(e)}")
-
-
-@app.get("/domains")
-async def domains() -> DomainsOutput:
-    return {"domains": SUPPORTED_DOMAINS}
-
-
-@app.get("/gold_standard")
-async def gold_standard(url: str,http_request:Request) -> GSOutput:
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    cursor.execute(
-        """
-        SELECT wr.url, wr.domain, wr.title, wr.html_text, gs.gold_text
-        FROM web_resources wr
-        JOIN gold_standard gs ON wr.url = gs.url
-        WHERE wr.url = ?
-        """,
-        (url,)
-    )
-    row=cursor.fetchone()#fetchone anzicche fetchall perche ci aspettiamo uan sola riga
-    cursor.close()
-    if not row:
-        domain = urlparse(url).netloc
-        if domain not in SUPPORTED_DOMAINS:
-            raise HTTPException(status_code=400,detail="Dominio non supportato")
-        raise HTTPException(status_code=404, detail="URL non nel gold standard")
-    return GSOutput(
-        url=row[0],
-        domain=row[1],
-        title=row[2],
-        html_text=row[3],
-        gold_text=row[4]
-    )
-
-@app.get("/gold_standard_urls")
-async def gold_standard_urls(domain:str,http_request:Request) ->GoldStandardUrlsOutput:
-    if domain not in SUPPORTED_DOMAINS:
-        raise HTTPException(status_code=400,detail="Dominio non supportato")
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    cursor.execute(
-        """
-        SELECT wr.url
-        FROM web_resources wr
-        JOIN gold_standard gs ON wr.url = gs.url
-        WHERE wr.domain = ?
-        """,
-        (domain,)
-    )
-    rows=cursor.fetchall()
-    cursor.close()
-    urls=[row[0] for row in rows]
-    return {"gold_standard_urls":urls}
-
-@app.get("/full_gold_standard")
-async def full_gold_standard(domain: str,http_request:Request) -> FullGSOutput:
-    if domain not in SUPPORTED_DOMAINS:
-        raise HTTPException(status_code=400, detail="Dominio non supportato")
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    cursor.execute(
-        """
-        SELECT wr.url, wr.domain, wr.title, wr.html_text, gs.gold_text
-        FROM web_resources wr
-        JOIN gold_standard gs ON wr.url = gs.url
-        WHERE wr.domain = ?
-        """,
-        (domain,)
-    )
-    rows=cursor.fetchall()
-    cursor.close()
-    gs = [GSOutput(url=row[0], domain=row[1], title=row[2], html_text=row[3], gold_text=row[4]) for row in rows]
-    return {"gold_standard": gs}
-
-
-@app.get("/full_gs_eval")
-async def full_gs_eval(domain: str,http_request:Request) -> FullGSEvalOutput:
-    if domain not in SUPPORTED_DOMAINS:
-        raise HTTPException(status_code=400, detail="Dominio non supportato")
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    
-    # Lettura veloce dal database: non blocchiamo l'utente!
-    cursor.execute(
-        """
-        SELECT wr.url, wr.html_text, gs.gold_text, ljr.judge_score
-        FROM web_resources wr
-        JOIN gold_standard gs ON wr.url = gs.url
-        LEFT JOIN llm_judge_results ljr ON wr.url = ljr.url
-        WHERE wr.domain = ?
-        """,
-        (domain,)
-    )
-    rows=cursor.fetchall()
-    cursor.close()
-    count = 0
-    valutatore = Evaluator()
-    parser = ParserFactory.create(domain)   
-    somme = Zero_Inizializer(EvaluationOutput)    
-    somma_judge=0.0
-    for row in rows:
-        url,html_text,gold_text,judge_score_db=row[0],row[1],row[2],row[3]
-        parsed_text = ""    
-        try:
-            parser_json = await parser.parser_url2(url,html_text)
-            parsed_text = parser_json.get("parsed_text", "") if parser_json else ""
-        except Exception:
-            parsed_text=""
-        try:
-            result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
-        except Exception:
-            result = Zero_Inizializer(EvaluationOutput)   
-
-        somma_judge += judge_score_db or 0.0  # judge_score gia' pronto dal DB
-
-        for key, value in result.items():
-            if isinstance(value, dict):
-                for sub_key, sub_value in value.items():
-                    somme[key][sub_key] += sub_value
-            else:
-                somme[key] += value
-        count += 1
-    if count == 0:  
-        return FullGSEvalOutput(**somme,judge_score=0.0)
-    medie = {}
-    for key, value in somme.items():
-        if isinstance(value, dict):
-            medie[key] = {sub_key: sub_val / count for sub_key, sub_val in value.items()}    
-        else:
-            medie[key] = value / count   
-    return FullGSEvalOutput(**medie,judge_score=somma_judge/count)
-
-
-#funzione per pulire il markdown
-def strip_txt(text: str) -> str:
-    text = re.sub(r'\*+([^*]+)\*+', r'\1', text) #grassetto
-    text = re.sub(r'\_+([^_]+)\_+', r'\1', text) #corsivo
-    text = re.sub(r'\#+\s?([^#]+)', r'\1', text) #titoli
-    text = re.sub(r'\[([^\]]+)\]\((?:[^)\\]|\\.)*\)', r'\1', text) #link
-    return text
-
-
-@app.post("/evaluate")
-async def evaluate(request: EvaluationRequest) -> EvaluationOutput:
-    parsed_text = strip_txt(request.parsed_text)
-    try:
-        return Evaluator().eval_server(parsed_text, request.gold_text)
-    except Exception as e:
-        print(f"Errore durante la valutazione: {e}")
-        return EvaluationOutput(**Zero_Inizializer(EvaluationOutput))
-
-@app.post("/evaluate_judge")
-async def evaluate_judge(request: EvaluationRequest) -> JudgeOutput: 
-    parsed_text = strip_txt(request.parsed_text)
-    return await ollama_client.judge(parsed_text=parsed_text, gold_text=request.gold_text)
-
-@app.get("/status")
-async def status(http_request: Request) -> StatusOutput:
-    try:
-        conn = http_request.app.state.db
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.close()
-        db_status = "ok"
-    except Exception:
-        db_status = "error"
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get("http://ollama:11434/api/tags")
-            ollama_status = "ok" if r.status_code == 200 else "error"
-    except Exception:
-        ollama_status = "error"
-
-    return StatusOutput(backend="ok", database=db_status, ollama=ollama_status)
-
-@app.get("/db_schema")
-async def db_schema()->DBSchemaOutput:
-    return DBSchemaOutput(
-        web_resources={
-            "url": "varchar(768), PK",
-            "domain": "varchar(255)",
-            "title": "varchar(2048)",
-            "html_text": "longtext",
-            "created_at": "datetime"
-        },
-        gold_standard={
-            "url": "varchar(768), PK, FK(web_resources.url)",
-            "gold_text": "longtext",
-            "created_at": "datetime"
-        },
-        parsed_results={
-            "id": "int, PK",
-            "url": "varchar(768), FK(web_resources.url)",
-            "parsed_text": "longtext",
-            "parser_version": "varchar(50)",
-            "created_at": "datetime"
-        },
-        evaluation_results={
-            "id": "int, PK",
-            "url": "varchar(768), FK(web_resources.url)",
-            "precision_score": "float",
-            "recall_score": "float",
-            "f1_score": "float",
-            "extra_metrics": "json",
-            "created_at": "datetime"
-        },
-        llm_judge_results={
-            "id": "int, PK",
-            "url": "varchar(768), FK(web_resources.url)",
-            "model_name": "varchar(100)",
-            "judge_score": "int",
-            "judge_feedback": "text",
-            "created_at": "datetime"
-        }
-    )
-
-@app.post("/add_web_resource")
-async def add_web_resource(body:AddWebResourceRequest,http_request:Request)->OperationOutput:
-    domain=urlparse(body.url).netloc
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    try:
-        cursor.execute(
-            """
-            INSERT INTO web_resources (url, domain, title, html_text)
-            VALUES (?, ?, ?, ?)
-            """,
-            (body.url, domain, "", body.html_text)
-        )
-        conn.commit() 
-        return OperationOutput(status="ok")
-    except Exception:
-        return OperationOutput(status="error")
-    finally:
-        cursor.close() 
-
-@app.post("/add_gold_standard")
-async def add_gold_standard(body:AddGoldStandardRequest,http_request:Request)->OperationOutput:
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT url FROM web_resources WHERE url=?",
-            (body.url,)
-        )
-        if not cursor.fetchone():
-            return OperationOutput(status="error")
-
-        cursor.execute(
-            """
-            INSERT INTO gold_standard (url, gold_text)
-            VALUES (?, ?)
-            """,
-            (body.url, body.gold_text)
-        )
-        conn.commit()
-        return OperationOutput(status="ok")
-    except Exception:
-        return OperationOutput(status="error")
-    finally:
-        cursor.close()
-
-@app.delete("/web_resource")
-async def delete_web_resource(body:DeleteRequest,http_request:Request)->OperationOutput:
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    try:
-        cursor.execute(
-            "DELETE FROM web_resources WHERE url=?",
-            (body.url,)
-        )
-        conn.commit()
-        return OperationOutput(status="ok")
-    except Exception:
-        return OperationOutput(status="error")
-    finally:
-        cursor.close()
-
-@app.delete("/gold_standard")
-async def delete_gold_standard(body:DeleteRequest,http_request:Request)->OperationOutput:
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT url FROM gold_standard WHERE url=?",
-            (body.url,)
-        )
-        if not cursor.fetchone():
-            return OperationOutput(status="error")
-        cursor.execute(
-            "DELETE FROM gold_standard WHERE url=?",
-            (body.url,)
-        )
-        conn.commit()
-        return OperationOutput(status="ok")
-    except Exception:
-        return OperationOutput(status="error")
-    finally:
-        cursor.close()
-
-@app.get("/db_stats")
-async def db_stats(http_request:Request)->DBStatsOutput:
-    conn=http_request.app.state.db
-    cursor=conn.cursor()
-
-    cursor.execute("SELECT domain, COUNT(*) FROM web_resources GROUP BY domain")
-    conteggio_web={row[0]:row[1] for row in cursor.fetchall()}
-
-    cursor.execute(
-        """
-        SELECT wr.domain, COUNT(*)
-        FROM gold_standard gs
-        JOIN web_resources wr ON gs.url = wr.url
-        GROUP BY wr.domain
-        """
-    )
-    conteggio_gold={row[0]:row[1] for row in cursor.fetchall()}
-
-    media_valutazione = {
-        domain: {"token_level_eval": {"precision": 0.0, "recall": 0.0, "f1": 0.0}}
-        for domain in conteggio_web
-    }
-    avg_eval_judje = {
-        domain: {"judge_score": 0.0}
-        for domain in conteggio_web
-    }
-
-    cursor.execute(
-        """
-        SELECT wr.domain, AVG(er.precision_score), AVG(er.recall_score), AVG(er.f1_score)
-        FROM evaluation_results er
-        JOIN web_resources wr ON er.url = wr.url
-        GROUP BY wr.domain
-        """
-    )
-    for row in cursor.fetchall():
-        media_valutazione[row[0]] = {
-            "token_level_eval": {
-                "precision": row[1] or 0.0,
-                "recall": row[2] or 0.0,
-                "f1": row[3] or 0.0
-            }
-        }
-
-    cursor.execute(
-        """
-        SELECT wr.domain, AVG(ljr.judge_score)
-        FROM llm_judge_results ljr
-        JOIN web_resources wr ON ljr.url = wr.url
-        GROUP BY wr.domain
-        """
-    )
-    for row in cursor.fetchall():
-        avg_eval_judje[row[0]] = {"judge_score": row[1] or 0.0}
-
-    cursor.close()
-    return DBStatsOutput(
-        web_resources=conteggio_web,
-        gold_standard=conteggio_gold,
-        avg_eval=media_valutazione,
-        avg_eval_judge=avg_eval_judje
-    )
-
-#Funzioni per il knowledge graph
-
-@app.get("/api/graph/visualize")
-async def visualize_graph():
-    try:
-        with Neo4jClient() as graph_client:
-            # La query ora estrae anche le etichette (labels) se presenti nel DB
-            query = "MATCH (s)-[r]->(o) RETURN s.name AS subject, labels(s) AS s_labels, type(r) AS relation, o.name AS object, labels(o) AS o_labels LIMIT 200"
-            results = graph_client.execute_read_query(query)
-
-            nodes, edges, node_names = [], [], set()
-
-            for row in results:
-                s, o, r = row.get("subject"), row.get("object"), row.get("relation")
-                s_labels, o_labels = row.get("s_labels", []), row.get("o_labels", [])
-                
-                s_group = s_labels[0] if s_labels else "Entity"
-                o_group = o_labels[0] if o_labels else "Entity"
-                
-                # Euristica di salvataggio: se i nodi non hanno etichette nel DB, le deduciamo dalla relazione
-                if s_group == "Entity":
-                    if r in ["ACTED_IN", "DIRECTED", "WROTE"]: s_group = "Person"
-                    elif r == "HAS_GENRE": s_group = "Movie"
-                if o_group == "Entity":
-                    if r in ["ACTED_IN", "DIRECTED", "WROTE"]: o_group = "Movie"
-                    elif r == "HAS_GENRE": o_group = "Genre"
-                    elif r == "WON": o_group = "Award"
-
-                if s not in node_names:
-                    nodes.append({"id": s, "label": s, "group": s_group})
-                    node_names.add(s)
-                if o not in node_names:
-                    nodes.append({"id": o, "label": o, "group": o_group})
-                    node_names.add(o)
-                edges.append({"from": s, "to": o, "label": r})
-            return {"nodes": nodes, "edges": edges}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/Add_url_to_graph")
-async def Add_url_to_graph(request: AddToGraphRequest, http_request: Request):
-    # NOTA: background_tasks rimosso dalla firma della funzione
-    
-    domain = urlparse(request.url).netloc
-    if domain not in SUPPORTED_DOMAINS:
-        raise HTTPException(status_code=400, detail="Dominio non supportato")
-        
-    conn = http_request.app.state.db
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database MariaDB non connesso.")
-    
-    # 1. Controlliamo se abbiamo già il testo parsato e il titolo nel database
-    cursor = conn.cursor()
-    testo_esistente = None
-    titolo_esistente = ""
-    try:
-        cursor.execute(
-            """
-            SELECT pr.parsed_text, wr.title 
-            FROM parsed_results pr
-            JOIN web_resources wr ON pr.url = wr.url
-            WHERE pr.url = ?
-            """, 
-            (request.url,)
-        )
-        record = cursor.fetchone()
-        if record:
-            testo_esistente = record[0]
-            titolo_esistente = record[1]
-            print(f"[CACHE HIT] Testo già presente nel DB per {request.url}")
-    except Exception as e:
-        print(f"Errore durante la lettura da MariaDB: {e}")
-    finally:
-        cursor.close()
-        
-    # 2. CHIAMATA BLOCCANTE ALL'LLM
-    # L'uso di "await" costringe l'API ad aspettare la fine dell'estrazione
-    await processa_e_salva_url(conn, request.url, domain, testo_esistente, titolo_esistente)
-    
-    # 3. Risposta inviata solo a operazione completata
-    return {
-        "status": "success", 
-        "message": f"Elaborazione dell'URL {request.url} completata e triple aggiunte al grafo."
-    }
-
-@app.delete("/api/graph/relation")
-async def Graph_delete_relation(request: DeleteGraphRelationRequest):
-    try:
-        with Neo4jClient() as graph_client:
-            graph_client.delete_relation_and_orphans(
-                request.subject, 
-                request.relation, 
-                request.object
-            )
-        return {
-            "status": "success", 
-            "message": f"Relazione '{request.relation}' eliminata. Eventuali nodi orfani sono stati rimossi."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore durante l'eliminazione: {str(e)}")
-
-@app.delete("/api/graph/node")
-async def Graph_delete_node(request: DeleteGraphNodeRequest):
-    try:
-        with Neo4jClient() as graph_client:
-            graph_client.delete_node_and_orphans(request.node_name)
-        return {
-            "status": "success", 
-            "message": f"Nodo '{request.node_name}' e relative relazioni eliminati. Vicini orfani rimossi."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore durante l'eliminazione: {str(e)}")
-
-
-
-@app.post("/api/build-graph")
-async def build_knowledge_graph(http_request: Request):
-    conn = http_request.app.state.db
-    # AWAIT blocca la risposta finché tutti i documenti non sono elaborati
-    await esegui_pipeline_grafo(conn)
-    
-    return {"status": "success", 
-            "message": "Knowledge Graph costruito interamente."
-            }
-
-async def processa_e_salva_url(conn, url: str, domain: str, testo_esistente: str = None, titolo_esistente: str = ""):
-    try:
-        print(f"[PROCESS_URL] Inizio elaborazione per: {url}")
-        
-        if testo_esistente:
-            parsed_text = testo_esistente
-            titolo = titolo_esistente
-            print(f"[{url}] Salto lo scraping: uso il testo dal DB.")
-        else:
-            print(f"[{url}] Avvio lo scraping web...")
-            # 1. Scraping e Parsing
-            parser = ParserFactory.create(domain)
-            risultato_parser = await parser.parser_url(url)
-            
-            if not risultato_parser or not risultato_parser.get("parsed_text"):
-                print(f"[PROCESS_URL] ERRORE: Nessun testo estratto da {url}")
-                return
-
-            parsed_text = risultato_parser["parsed_text"]
-            html_text = risultato_parser.get("html_text", "")
-            titolo = risultato_parser.get("title", "")
-
-            # 2. Salvataggio su MariaDB (nella tabella web_resources e parsed_results)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO web_resources (url, domain, title, html_text) 
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE 
-                    domain = VALUES(domain),
-                    title = VALUES(title),
-                    html_text = VALUES(html_text)
-                """,
-                (url, domain, titolo, html_text)
-            )
-            cursor.execute(
-                """
-                INSERT INTO parsed_results (url, parsed_text, parser_version)
-                VALUES (?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    parsed_text = VALUES(parsed_text),
-                    parser_version = VALUES(parser_version)
-                """,
-                (url, parsed_text, "1.0")
-            )
-            conn.commit()
-            cursor.close()
-            print(f"[PROCESS_URL] Testo salvato in MariaDB per: {url}")
-
-        # 3. Estrazione Triple con Ollama
-        print(f"[PROCESS_URL] Analisi LLM in corso per: {titolo} ({url})")
-        risultato_ollama = await ollama_client.extract_triples(parsed_text, titolo)
-        
-        if "error" in risultato_ollama:
-            print(f"[PROCESS_URL] ERRORE Ollama per {url}: {risultato_ollama['error']}")
-            return
-            
-        triple = risultato_ollama.get("triples", [])
-
-        # 4. Inserimento in Neo4j
-        if triple:
-            with Neo4jClient() as graph_client:
-                inserite = graph_client.add_triples_batch(triple)
-                print(f"[PROCESS_URL] [OK] Inserite {inserite} triple nel grafo per {url}")
-        else:
-            print(f"[PROCESS_URL] [WARN] Nessuna tripla estratta da Ollama per {url}")
-
-    except Exception as e:
-        print(f"[PROCESS_URL] Errore imprevisto durante l'elaborazione di {url}: {e}")
-        if conn:
-            conn.rollback() # Annulla modifiche al db se c'è un crash
-
-
-# Questa funzione interroga MariaDB, passerà il testo al tuo client Ollama e invierà il risultato al client Neo4j
-async def esegui_pipeline_grafo(conn):
-    cursor = conn.cursor()
-    
-    # 1. Recupera url, titolo e testo parsato da MariaDB
-    cursor.execute("""
-        SELECT pr.url, wr.title, pr.parsed_text 
-        FROM parsed_results pr
-        JOIN web_resources wr ON pr.url = wr.url
-        WHERE wr.domain IN ('www.mymovies.it', 'www.imdb.com') 
-        AND pr.parsed_text IS NOT NULL 
-        AND pr.parsed_text != ''
-    """)
-    documenti = cursor.fetchall()
-    cursor.close()
-
-    print(f"Trovati {len(documenti)} documenti da processare per il grafo. Inizio estrazione...")
-
-    with Neo4jClient() as graph_client:
-        for row in documenti:
-            url = row[0]
-            titolo = row[1]     # <-- Nuovo: estraiamo il titolo
-            testo = row[2]      # <-- Aggiornato l'indice per il testo
-            
-            print(f"Analisi LLM in corso per: {titolo} ({url})")
-            
-            # 3. Passiamo ENTRAMBI i parametri a Ollama
-            risultato_ollama = await ollama_client.extract_triples(testo, titolo)
-            
-            # Gestione di eventuali errori restituiti dal blocco try/except in extract_triples
-            if "error" in risultato_ollama:
-                print(f"[ERRORE] Ollama ha fallito su {url}: {risultato_ollama['error']}")
-                continue
-            
-            triple = risultato_ollama.get("triples", [])
-            
-            # 4. Inserisce le triple estratte in Neo4j tramite il tuo metodo batch
-            if triple:
-                inserite = graph_client.add_triples_batch(triple)
-                print(f"[OK] Inserite {inserite} triple nel grafo per {url}")
-            else:
-                print(f"[WARN] Nessuna tripla trovata per {url}")
-            
-            # Lasciamo respirare l'Event Loop (e la CPU) tra un film e l'altro
-            await asyncio.sleep(2)
-            
-    print("Pipeline verso Neo4j completata con successo!")
-
-
-@app.post("/api/ask_graph")
-async def ask_knowledge_graph(request: AskGraphRequest):
-    print(f"[GraphRAG] Domanda ricevuta: {request.question}")
-    
-    # 1. Text-to-Cypher (L'unica vera fase di AI)
-    cypher_query = await ollama_client.generate_cypher(request.question)
-    if not cypher_query:
-        raise HTTPException(status_code=500, detail="Impossibile generare la query Cypher.")
-    
-    print(f"[GraphRAG] Query generata:\n{cypher_query}")
-    
-    # 2. Esecuzione su Neo4j
-    try:
-        with Neo4jClient() as graph_client:
-            db_results = graph_client.execute_read_query(cypher_query)
-    except Exception as e:
-         raise HTTPException(status_code=500, detail=f"Errore Neo4j: {str(e)}")
-         
-    print(f"[GraphRAG] Risultati DB: {db_results}")
-    
-    # Intercettazione errori Cypher
-    if len(db_results) > 0 and "error" in db_results[0]:
-        return {
-            "question": request.question,
-            "cypher_query": cypher_query,
-            "raw_data": [],
-            "answer": "La domanda è troppo complessa o la query generata non è valida."
-        }
-
-    # 3. Formattazione Deterministica (Addio LLM Text-to-Text!)
-    if not db_results:
-        final_answer = "Mi dispiace, ma non ho trovato informazioni a riguardo nel Knowledge Graph."
-    else:
-        # Estraiamo dinamicamente i valori di qualsiasi query Cypher
-        elementi = []
-        for riga in db_results:
-            elementi.append(", ".join([str(v) for v in riga.values()]))
-        
-        final_answer = "Ecco i risultati trovati nel Knowledge Graph:\n" + "\n".join([f"- {e}" for e in elementi])
-    
-    return {
-        "question": request.question,
-        "cypher_query": cypher_query,
-        "raw_data": db_results,
-        "answer": final_answer
-    }
+# --- REGISTRAZIONE DEI ROUTER ---
+app.include_router(evaluation.router)
+app.include_router(database.router)
+app.include_router(graph.router)
