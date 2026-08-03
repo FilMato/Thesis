@@ -14,6 +14,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8003")
 
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
+# --- ROTTE PER LA PAGINA PRINCIPALE E IL PARSER ---
 
 async def get_status() -> dict:
     """Recupera lo stato del sistema dal backend."""
@@ -34,7 +35,6 @@ async def get_domains() -> list[str]: #Recupera la lista dei domini supportati d
             return resp.json().get("domains", []) #converte la risposta in un jaison e legge la chiave domains
     except Exception:
         return []
-
 
 async def get_full_gold_standard(domain: str) -> list[dict]: #Recupera tutto il gold standard di un dominio dal backend
     if not domain:
@@ -63,7 +63,6 @@ async def build_gs_urls(domains: list[str]) -> dict[str, list[str]]: #funzione p
         gs_urls[domain] = urls
     return gs_urls
 
-
 async def get_stats() -> Optional[dict]: #Recupera le statistiche aggregate per dominio dal backend
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -73,7 +72,6 @@ async def get_stats() -> Optional[dict]: #Recupera le statistiche aggregate per 
     except Exception:
         pass
     return None
-
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):#Pagina principale: carica domini e URL del GS per il menu a tendina
@@ -89,6 +87,7 @@ async def index(request: Request):#Pagina principale: carica domini e URL del GS
             "status":status
         },
     )
+
 @app.post("/parse_url",response_class=HTMLResponse)
 async def parse_url(request:Request,url:str=Form(...),mode:str=Form("live")): #prende in input form cioè indica di cercare l'url nel corpo della richiesta http
     domains= await get_domains()
@@ -151,6 +150,7 @@ async def parse_url(request:Request,url:str=Form(...),mode:str=Form("live")): #p
             "backend_url":   BACKEND_URL,
         }
     )
+
 @app.get("/parser",response_class=HTMLResponse)
 async def parser_get(request:Request):
     domains=await get_domains()
@@ -169,7 +169,6 @@ async def parser_get(request:Request):
             "mode":"live"
         }
     )
-
 
 @app.get("/gold-standard", response_class=HTMLResponse)
 async def gold_standard_get(
@@ -196,7 +195,6 @@ async def gold_standard_get(
             "success": success,
         },
     )
-
 
 @app.post("/gold-standard/fetch", response_class=HTMLResponse)
 async def gold_standard_fetch(request: Request, domain: str = Form(...), url: str = Form(...)):
@@ -234,7 +232,6 @@ async def gold_standard_fetch(request: Request, domain: str = Form(...), url: st
         },
     )
 
-
 @app.post("/gold-standard/save")
 async def gold_standard_save(
     request: Request,
@@ -271,7 +268,6 @@ async def gold_standard_save(
     if error:
         params["error"] = error
     return RedirectResponse(url=f"/gold-standard?{urlencode(params)}", status_code=303)
-
 
 @app.post("/gold-standard/delete")
 async def gold_standard_delete(request: Request, domain: str = Form(...), url: str = Form(...)):
@@ -326,7 +322,6 @@ async def graph_index(request: Request, success: Optional[str] = None, error: Op
 
 @app.get("/graph/data")
 async def get_graph_data():
-    """Proxy per scaricare i nodi e gli archi per Vis.js"""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{BACKEND_URL}/api/graph/visualize")
@@ -380,7 +375,7 @@ async def graph_action(
             else:
                 error = "Parametri mancanti per l'azione richiesta."
 
-            # --- GESTIONE ERRORI PULITA ---
+            # Gesione errori
             if r is not None:
                 if r.status_code == 200: 
                     success = r.json().get("message", "Operazione completata.")

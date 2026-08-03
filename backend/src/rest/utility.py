@@ -3,7 +3,7 @@ import json
 import re
 from pydantic import BaseModel
 
-# GESTIONE DOMINI
+# Gestione dei domini supportati
 base_dir = os.path.dirname(os.path.abspath(__file__))
 percorso_domains = os.path.join(base_dir, "..", "..", "domains.json")
 try:
@@ -20,7 +20,8 @@ except FileNotFoundError:
         "www.imdb.com"
     ]
 
-# UTILITY FUNCTIONS
+
+# UTILITY FUNCTIONS:
 
 #Legge un modello Pydantic e crea un dizionario con la stessa struttura inizializzato a 0.0
 def Zero_Inizializer(model_class: type[BaseModel]) -> dict:   
@@ -34,7 +35,7 @@ def Zero_Inizializer(model_class: type[BaseModel]) -> dict:
             zero_dict[key] = 0.0
     return zero_dict
 
-#funzione per pulire il markdown
+#Funzione per pulire il markdown
 def strip_txt(text: str) -> str:
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text) #grassetto
     text = re.sub(r'\_+([^_]+)\_+', r'\1', text) #corsivo

@@ -31,43 +31,43 @@ async def status(http_request: Request) -> StatusOutput:
 @router.get("/db_schema")
 async def db_schema() -> DBSchemaOutput:
     return DBSchemaOutput(
-            web_resources={
-                "url": "varchar(768), PK",
-                "domain": "varchar(255)",
-                "title": "varchar(2048)",
-                "html_text": "longtext",
-                "created_at": "datetime"
-            },
-            gold_standard={
-                "url": "varchar(768), PK, FK(web_resources.url)",
-                "gold_text": "longtext",
-                "created_at": "datetime"
-            },
-            parsed_results={
-                "id": "int, PK",
-                "url": "varchar(768), FK(web_resources.url)",
-                "parsed_text": "longtext",
-                "parser_version": "varchar(50)",
-                "created_at": "datetime"
-            },
-            evaluation_results={
-                "id": "int, PK",
-                "url": "varchar(768), FK(web_resources.url)",
-                "precision_score": "float",
-                "recall_score": "float",
-                "f1_score": "float",
-                "extra_metrics": "json",
-                "created_at": "datetime"
-            },
-            llm_judge_results={
-                "id": "int, PK",
-                "url": "varchar(768), FK(web_resources.url)",
-                "model_name": "varchar(100)",
-                "judge_score": "int",
-                "judge_feedback": "text",
-                "created_at": "datetime"
-            }
-        )
+        web_resources={
+            "url": "varchar(768), PK",
+            "domain": "varchar(255)",
+            "title": "varchar(2048)",
+            "html_text": "longtext",
+            "created_at": "datetime"
+        },
+        gold_standard={
+            "url": "varchar(768), PK, FK(web_resources.url)",
+            "gold_text": "longtext",
+            "created_at": "datetime"
+        },
+        parsed_results={
+            "id": "int, PK",
+            "url": "varchar(768), FK(web_resources.url)",
+            "parsed_text": "longtext",
+            "parser_version": "varchar(50)",
+            "created_at": "datetime"
+        },
+        evaluation_results={
+            "id": "int, PK",
+            "url": "varchar(768), FK(web_resources.url)",
+            "precision_score": "float",
+            "recall_score": "float",
+            "f1_score": "float",
+            "extra_metrics": "json",
+            "created_at": "datetime"
+        },
+        llm_judge_results={
+            "id": "int, PK",
+            "url": "varchar(768), FK(web_resources.url)",
+            "model_name": "varchar(100)",
+            "judge_score": "int",
+            "judge_feedback": "text",
+            "created_at": "datetime"
+        }
+    )
 
 @router.post("/add_web_resource")
 async def add_web_resource(body: AddWebResourceRequest, http_request: Request) -> OperationOutput:

@@ -9,10 +9,12 @@ from src.factory.parserfactory import ParserFactory
 
 router = APIRouter(tags=["Knowledge Graph"])
 
+# Questa funzione gestisce l'intero flusso di elaborazione di un URL: scraping, parsing, salvataggio su MariaDB, estrazione triple con Ollama e inserimento in Neo4j.
 async def processa_e_salva_url(conn, url: str, domain: str, testo_esistente: str = None, titolo_esistente: str = ""):
     try:
         print(f"[PROCESS_URL] Inizio elaborazione per: {url}")
-        
+
+        #Se il testo parsato esiste già nel DB, lo usiamo direttamente senza fare scraping, altrimenti facciamo scraping e parsing e salviamo il testo parsato nel DB
         if testo_esistente:
             parsed_text = testo_esistente
             titolo = titolo_esistente
@@ -31,7 +33,7 @@ async def processa_e_salva_url(conn, url: str, domain: str, testo_esistente: str
             html_text = risultato_parser.get("html_text", "")
             titolo = risultato_parser.get("title", "")
 
-            # 2. Salvataggio su MariaDB (nella tabella web_resources e parsed_results)
+            # 2. Salvataggio su MariaDB 
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -81,7 +83,7 @@ async def processa_e_salva_url(conn, url: str, domain: str, testo_esistente: str
         if conn:
             conn.rollback() # Annulla modifiche al db se c'è un crash
 
-# Questa funzione interroga MariaDB, passerà il testo al tuo client Ollama e invierà il risultato al client Neo4j
+# Questa funzione interroga MariaDB, passa il testo al client Ollama ed invia il risultato al client Neo4j
 async def esegui_pipeline_grafo(conn):
     cursor = conn.cursor()
     
@@ -102,14 +104,13 @@ async def esegui_pipeline_grafo(conn):
     with Neo4jClient() as graph_client:
         for row in documenti:
             url = row[0]
-            titolo = row[1]     # <-- Nuovo: estraiamo il titolo
-            testo = row[2]      # <-- Aggiornato l'indice per il testo
+            titolo = row[1]     
+            testo = row[2]     
             
             print(f"Analisi LLM in corso per: {titolo} ({url})")
             
-            # 3. Passiamo ENTRAMBI i parametri a Ollama
+            # 2. Passiamo ENTRAMBI i parametri a Ollama
             risultato_ollama = await ollama_client.extract_triples(testo, titolo)
-            
             # Gestione di eventuali errori restituiti dal blocco try/except in extract_triples
             if "error" in risultato_ollama:
                 print(f"[ERRORE] Ollama ha fallito su {url}: {risultato_ollama['error']}")
@@ -117,14 +118,14 @@ async def esegui_pipeline_grafo(conn):
             
             triple = risultato_ollama.get("triples", [])
             
-            # 4. Inserisce le triple estratte in Neo4j tramite il tuo metodo batch
+            # 3. Inserisce le triple estratte in Neo4j 
             if triple:
                 inserite = graph_client.add_triples_batch(triple)
                 print(f"[OK] Inserite {inserite} triple nel grafo per {url}")
             else:
                 print(f"[WARN] Nessuna tripla trovata per {url}")
             
-            # Lasciamo respirare l'Event Loop (e la CPU) tra un film e l'altro
+            # blocca l'esecuzione per 2 secondi in modo da poter accettare altre richieste ad Ollama invece che dover aspettare che finisca l'elaborazione di tutte le righe
             await asyncio.sleep(2)
             
     print("Pipeline verso Neo4j completata con successo!")
@@ -133,10 +134,12 @@ async def esegui_pipeline_grafo(conn):
 async def visualize_graph():
     try:
         with Neo4jClient() as graph_client:
-            # La query ora anche le etichette (labels) se presenti nel DB
+            # Recupera un campione di nodi e relazioni dal grafo per la visualizzazione
             query = "MATCH (s)-[r]->(o) RETURN s.name AS subject, labels(s) AS s_labels, type(r) AS relation, o.name AS object, labels(o) AS o_labels LIMIT 200"
             results = graph_client.execute_read_query(query)
-            nodes, edges, node_names = [], [], set()
+            nodes = []
+            edges = []
+            node_names = set()
 
             for row in results:
                 s, o, r = row.get("subject"), row.get("object"), row.get("relation")
@@ -151,15 +154,17 @@ async def visualize_graph():
                     if r in ["ACTED_IN", "DIRECTED", "WROTE"]: o_group = "Movie"
                     elif r == "HAS_GENRE": o_group = "Genre"
                     elif r == "WON": o_group = "Award"
-
                 if s not in node_names:
                     nodes.append({"id": s, "label": s, "group": s_group})
                     node_names.add(s)
                 if o not in node_names:
                     nodes.append({"id": o, "label": o, "group": o_group})
                     node_names.add(o)
+
                 edges.append({"from": s, "to": o, "label": r})
+
             return {"nodes": nodes, "edges": edges}
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -168,11 +173,12 @@ async def Add_url_to_graph(request: AddToGraphRequest, http_request: Request):
     domain = urlparse(request.url).netloc
     if domain not in SUPPORTED_DOMAINS:
         raise HTTPException(status_code=400, detail="Dominio non supportato")
+    
     conn = http_request.app.state.db
     if not conn:
         raise HTTPException(status_code=500, detail="Database MariaDB non connesso.")
 
-    # 1. Controlliamo se abbiamo già il testo parsato e il titolo nel database
+    # Controlliamo se abbiamo già il testo parsato e il titolo nel database
     cursor = conn.cursor()
     testo_esistente = None
     titolo_esistente = ""
@@ -195,12 +201,10 @@ async def Add_url_to_graph(request: AddToGraphRequest, http_request: Request):
         print(f"Errore durante la lettura da MariaDB: {e}")
     finally:
         cursor.close()
-        
-     # 2. CHIAMATA BLOCCANTE ALL'LLM
-    # L'uso di "await" costringe l'API ad aspettare la fine dell'estrazione
-    await processa_e_salva_url(conn, request.url, domain, testo_esistente, titolo_esistente)
     
-    # 3. Risposta inviata solo a operazione completata
+    # L'uso di await costringe l'API ad aspettare la fine dell'estrazione
+    await processa_e_salva_url(conn, request.url, domain, testo_esistente, titolo_esistente)
+   
     return {
         "status": "success", 
         "message": f"Elaborazione dell'URL {request.url} completata e triple aggiunte al grafo."
@@ -222,12 +226,12 @@ async def Graph_delete_node(request: Request):
             if not risultato:
                 raise HTTPException(status_code=404, detail=f"Impossibile eliminare: il nodo '{node_name}' non esiste nel grafo.")
             
-            # 2. Eliminazione (DETACH DELETE rimuove il nodo e i suoi archi)
+            # 2. Eliminazione 
             delete_query = f"MATCH (n {{name: '{node_name}'}}) DETACH DELETE n"
-            # Usiamo execute_read_query o il metodo equivalente che usi per lanciare query grezze
             graph_client.execute_read_query(delete_query)
             
         return {"status": "success", "message": f"Nodo '{node_name}' e relative relazioni eliminati."}
+    
     except HTTPException:
         raise
     except Exception as e:
@@ -248,6 +252,7 @@ async def Graph_delete_relation(request: DeleteGraphRelationRequest):
             graph_client.delete_relation_and_orphans(request.subject, request.relation, request.object)
             
         return {"status": "success", "message": f"Relazione '{request.relation}' eliminata con successo."}
+    
     except HTTPException:
         raise
     except Exception as e:
@@ -256,7 +261,7 @@ async def Graph_delete_relation(request: DeleteGraphRelationRequest):
 @router.post("/api/build-graph")
 async def build_knowledge_graph(http_request: Request):
     conn = http_request.app.state.db
-    # AWAIT blocca la risposta finché tutti i documenti non sono elaborati
+    # await blocca la risposta finché tutti i documenti non sono elaborati
     await esegui_pipeline_grafo(conn)
     
     return {"status": "success", 
@@ -267,7 +272,7 @@ async def build_knowledge_graph(http_request: Request):
 async def ask_knowledge_graph(request: AskGraphRequest):
     print(f"[GraphRAG] Domanda ricevuta: {request.question}")
         
-    # 1. Text-to-Cypher (L'unica vera fase di AI)
+    # 1. Generazione query Cypher con Ollama
     cypher_query = await ollama_client.generate_cypher(request.question)
     if not cypher_query:
         raise HTTPException(status_code=500, detail="Impossibile generare la query Cypher.")
@@ -292,11 +297,10 @@ async def ask_knowledge_graph(request: AskGraphRequest):
             "answer": "La domanda è troppo complessa o la query generata non è valida."
         }
 
-    # 3. Formattazione Deterministica (Addio LLM Text-to-Text!)
+    # 3. Formattazione della risposta
     if not db_results:
         final_answer = "Mi dispiace, ma non ho trovato informazioni a riguardo nel Knowledge Graph."
     else:
-        # Estraiamo dinamicamente i valori di qualsiasi query Cypher
         elementi = []
         for riga in db_results:
             elementi.append(", ".join([str(v) for v in riga.values()]))

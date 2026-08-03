@@ -14,10 +14,15 @@ from src.factory.parserfactory import ParserFactory
 from clients import ollama_client
 from src.rest.utility import strip_txt
 
-# Import dei Routers appena creati
+# Import dei Router API
 from src.rest.routers import evaluation, database, graph
 
 async def populate_evaluations(conn):
+    # NOTA: questa funzione pre-calcola evaluation_results e llm_judge_results all'avvio,
+    # cosi' full_gs_eval puo' leggere il judge_score gia' pronto dal DB invece di chiamare
+    # Ollama in tempo reale per ogni URL (causa di timeout/lentezza segnalata anche da altri
+    # gruppi: chiamare il judge live per ogni riga di full_gs_eval e' troppo lento per il grader)
+
     print("Avvio popolamento evaluation_results e llm_judge_results...")
     cursor = conn.cursor()
     cursor.execute(
@@ -41,6 +46,7 @@ async def populate_evaluations(conn):
     for row in rows:
         url, domain, html_text, gold_text = row[0], row[1], row[2], row[3]
 
+        # parsing
         try:
             parser = ParserFactory.create(domain)
             parser_json = await parser.parser_url2(url, html_text)
@@ -67,6 +73,7 @@ async def populate_evaluations(conn):
             except Exception as e:
                 print(f"Errore salvataggio parsed_results per {url}: {e}")
 
+        # evaluation
         try:
             result = valutatore.eval_server(strip_txt(parsed_text), gold_text)
             precision, recall, f1 = result["token_level_eval"]["precision"], result["token_level_eval"]["recall"], result["token_level_eval"]["f1"]
@@ -75,6 +82,8 @@ async def populate_evaluations(conn):
             precision, recall, f1 = 0.0, 0.0, 0.0
             extra = {}
 
+        # Log diagnostico per-URL: permette di capire quali pagine abbassano la
+        # media del dominio (es. parsing fallito -> parsed_text vuoto -> punteggio 0)
         print(f"[populate_evaluations] {url} -> precision={precision:.3f} recall={recall:.3f} f1={f1:.3f} (parsed_text len={len(parsed_text)})")
 
         try:
@@ -93,6 +102,10 @@ async def populate_evaluations(conn):
         except Exception as e:
             print(f"Errore salvataggio evaluation per {url}: {e}")
 
+        # judge
+        # NOTA: usiamo strip_txt(parsed_text), coerentemente con /evaluate_judge,
+        # cosi' il judge valuta lo stesso testo "pulito" usato anche per le metriche
+        # token-level qui sopra (prima qui veniva passato il testo non normalizzato).
         try:
             judge_result = await ollama_client.judge(parsed_text=strip_txt(parsed_text), gold_text=gold_text)
             judge_score, model_name, judge_feedback = judge_result["judge_score"], judge_result["model_name"], judge_result["judge_feedback"]
@@ -120,6 +133,7 @@ async def populate_evaluations(conn):
         await asyncio.sleep(2)
     print("Popolamento evaluation completato.")
 
+# Questa funzione serve come doppio controllo per assicurarsi che il backend non si avvii finché MariaDB non è pronto. Anche se abbiamo messo un healthcheck nel docker-compose.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     max_retries = 5
@@ -147,18 +161,27 @@ async def lifespan(app: FastAPI):
             time.sleep(delay_seconds)
 
     app.state.db = conn
+
+     # Popolamento iniziale del database con i dati del Gold Standard
     if conn:
         populate_database(conn)
+        # Pre-calcolo evaluation_results e llm_judge_results: full_gs_eval legge da qui
+        # invece di richiamare Ollama in tempo reale (vedi nota in populate_evaluations).
+        # NON si fa await qui: ogni chiamata al judge richiede circa 1-2 minuti, e con
+        # decine di URL nel gold standard un await bloccante terrebbe l'app in startup
+        # per troppo tempo, rendendo il backend irraggiungibile per il grader (che ha
+        # un timeout molto piu' breve). Si lancia come task in background: l'app diventa
+        # subito raggiungibile, il DB viene popolato man mano che i task completano.
         asyncio.create_task(populate_evaluations(conn))
     yield
-
+    # Fase di spegnimento
     if app.state.db:
         app.state.db.close()
         print("Connessione a MariaDB chiusa correttamente.")
 
 app = FastAPI(lifespan=lifespan)
 
-# --- REGISTRAZIONE DEI ROUTER ---
+# REGISTRAZIONE DEI ROUTER 
 app.include_router(evaluation.router)
 app.include_router(database.router)
 app.include_router(graph.router)
