@@ -16,5 +16,9 @@ echo "🔴 Retrieve qwen2.5:3b model..."
 ollama pull qwen2.5:3b
 echo "🟢 Done!"
 
+echo "🔴 Retrieve qwen2.5-coder:7b model..."
+ollama pull qwen2.5-coder:7b
+echo "🟢 Done!"
+
 # Wait for Ollama process to finish.
 wait $pid
