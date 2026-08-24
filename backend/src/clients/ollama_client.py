@@ -76,11 +76,20 @@ async def judge(parsed_text: str, gold_text: str) -> dict:
     return giudizio
 
 
-# Funzione per pulire i titoli fei folm
+import re
+
+# Funzione per pulire i titoli dei film
 def pulisci_date_titoli(testo):
     if not isinstance(testo, str):
         return testo
-    return re.sub(r'\s*\([^)]*\d+[^)]*\)', '', testo).strip()
+        
+    # 1. Rimuove le date tra parentesi (es. "Il Gladiatore (2000)")
+    testo_pulito = re.sub(r'\s*\([^)]*\d+[^)]*\)', '', testo)
+    
+    # 2. Rimuove il pattern "Anno - " all'inizio (es. "1989 - Verdetto finale")
+    testo_pulito = re.sub(r'^\d{4}\s*-\s*', '', testo_pulito)
+    
+    return testo_pulito.strip()
 
 #Questa funzione è un algoritmo ibrido per estrarre informazioni più inportanti da pagine web lunghe
 def estrai_frasi_salienti(testo: str, max_chars: int = 3500) -> str:
@@ -240,7 +249,7 @@ async def extract_triples(text: str, titolo_ufficiale: str) -> dict:
             triple_estratte = await analizza_chunk(blocco)
             
             tipi_ok = {"Person", "Movie", "Award", "Genre"}
-            rel_ok = {"DIRECTED", "ACTED_IN", "INTERPRETED", "HAS_GENRE", "WON"}
+            rel_ok = {"DIRECTED", "ACTED_IN", "HAS_GENRE", "WON"}
 
             for t in triple_estratte:
                 # Estraiamo per sicurezza le variabili prima del controllo Blacklist per evitare ReferenceError

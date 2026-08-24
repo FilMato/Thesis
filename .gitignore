@@ -6,7 +6,7 @@ ollama_data/
 
 # --- Dati Database ---
 mariadb_data/
-neo4j_data/
+neo4j_volume/
 
 # --- Python ---
 __pycache__/

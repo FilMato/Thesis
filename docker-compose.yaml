@@ -82,7 +82,7 @@ services:
       # Impostiamo utente (neo4j) e password (minerva_graph_pass)
       - NEO4J_AUTH=neo4j/minerva_graph_pass
     volumes:
-      - neo4j_volume:/data # Volume persistente per salvare il grafo
+      - ./neo4j_volume:/data # Volume persistente per salvare il grafo
 
 # DICHIARAZIONE DEI VOLUMI NOMINATI
 volumes:
