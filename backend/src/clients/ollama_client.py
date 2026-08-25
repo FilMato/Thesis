@@ -9,6 +9,35 @@ SELECTED_MODEL = "qwen2.5:3b"
 MODEL_CYPHER = "qwen2.5-coder:7b" #la traduzione di una domanda testuale in query Cypher richiede un modello più potente, quindi usiamo la versione 7B specializzata per il coding.
 MAX_CHARS = 1000
 
+# Vocabolario controllato per la normalizzazione dei generi
+GENRE_MAPPING = {
+    "azione": "Action",
+    "action": "Action",
+    "fantastico": "Fantasy",
+    "fantasy": "Fantasy",
+    "fantascienza": "Sci-Fi",
+    "science-fiction": "Sci-Fi",
+    "sci-fi": "Sci-Fi",
+    "scifi": "Sci-Fi",
+    "commedia": "Comedy",
+    "comedy": "Comedy",
+    "drammatico": "Drama",
+    "drama": "Drama",
+    "thriller": "Thriller",
+    "horror": "Horror",
+    "avventura": "Adventure",
+    "adventure": "Adventure",
+    "animazione": "Animation",
+    "animation": "Animation",
+    "romantico": "Romance",
+    "romance": "Romance",
+    "giallo": "Mystery",
+    "mystery": "Mystery",
+    "biografico": "Biographical",
+    "biographical": "Biographical"
+    # ... puoi aggiungere tutti quelli che trovi
+}
+
 _ollama_lock = asyncio.Lock()
 MAX_ATTEMPTS = 2
 
@@ -262,6 +291,12 @@ async def extract_triples(text: str, titolo_ufficiale: str) -> dict:
                 # --- PULIZIA STRINGHE ---
                 sub = re.sub(r'\[.*?\]\s*', '', sub).replace('#', '').strip()
                 obj = re.sub(r'\[.*?\]\s*', '', obj).replace('#', '').strip()
+
+                if t['object_type'] == 'Genre':
+                    raw_genre = t['object'].lower().strip()
+                    # Se trova la chiave nel dizionario, usa il valore canonico in inglese.
+                    # Altrimenti, fa un fallback capitalizzando la prima lettera.
+                    t['object'] = GENRE_MAPPING.get(raw_genre, t['object'].capitalize())
                 
                 if s_type != "Movie":
                     sub = re.sub(r'^\d+\s+', '', sub).strip()
