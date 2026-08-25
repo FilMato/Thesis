@@ -368,7 +368,7 @@ async def generate_cypher(question: str) -> str:
     }
     
     async with _ollama_lock:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             try:
                 r = await client.post(URL, json=payload)
                 r.raise_for_status()

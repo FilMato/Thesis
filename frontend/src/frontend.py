@@ -335,7 +335,7 @@ async def get_graph_data():
 async def graph_ask(request: Request, question: str = Form(...)):
     error, answer_data = None, None
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(f"{BACKEND_URL}/api/ask_graph", json={"question": question})
             if resp.status_code == 200:
                 answer_data = resp.json()
@@ -362,7 +362,7 @@ async def graph_action(
 ):
     error, success = None, None
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=None) as client:
             r = None
             if action == "add_url" and url:
                 r = await client.post(f"{BACKEND_URL}/api/Add_url_to_graph", json={"url": url})
