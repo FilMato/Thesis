@@ -19,11 +19,14 @@ GENRE_MAPPING = {
     "science-fiction": "Sci-Fi",
     "sci-fi": "Sci-Fi",
     "scifi": "Sci-Fi",
+    "poliziesco": "Crime",
+    "crime": "Crime",
     "commedia": "Comedy",
     "comedy": "Comedy",
     "drammatico": "Drama",
     "drama": "Drama",
     "thriller": "Thriller",
+    "giallo": "Thriller",
     "horror": "Horror",
     "avventura": "Adventure",
     "adventure": "Adventure",
@@ -291,12 +294,6 @@ async def extract_triples(text: str, titolo_ufficiale: str) -> dict:
                 # --- PULIZIA STRINGHE ---
                 sub = re.sub(r'\[.*?\]\s*', '', sub).replace('#', '').strip()
                 obj = re.sub(r'\[.*?\]\s*', '', obj).replace('#', '').strip()
-
-                if t['object_type'] == 'Genre':
-                    raw_genre = t['object'].lower().strip()
-                    # Se trova la chiave nel dizionario, usa il valore canonico in inglese.
-                    # Altrimenti, fa un fallback capitalizzando la prima lettera.
-                    t['object'] = GENRE_MAPPING.get(raw_genre, t['object'].capitalize())
                 
                 if s_type != "Movie":
                     sub = re.sub(r'^\d+\s+', '', sub).strip()
@@ -338,6 +335,11 @@ async def extract_triples(text: str, titolo_ufficiale: str) -> dict:
                 if sub == obj:
                     continue
 
+                # Normalizzazione dei Generi
+                if o_type == 'Genre':
+                    raw_genre = obj.lower().strip()
+                    obj = GENRE_MAPPING.get(raw_genre, obj.capitalize())
+                
                 if s_type in tipi_ok and o_type in tipi_ok and rel in rel_ok:
                     # Auto-correttore per le direzioni ACTED_IN
                     if rel == "ACTED_IN" and s_type == "Movie" and o_type == "Person":
